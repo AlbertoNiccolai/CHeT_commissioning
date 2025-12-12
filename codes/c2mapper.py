@@ -2,16 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-def mapper_plot(bundles_green, N1=45, N2=49, L=15., R=1.7):
+def mapper_plot(bundles_green, N1=59, N2=60, L=15., R=1.7):
 
     # ----------------------------------------
     #  Calibrazione
     # ----------------------------------------
-    DELTA_ROT = np.deg2rad(10)
-    PHI_OFFSET_L1 = 4.118974897606805   # layer 1
-    PHI_OFFSET_L2 = 3.654505739890168    # layer 2
-    PHI_OFFSET_L1 += DELTA_ROT
-    PHI_OFFSET_L2 += DELTA_ROT
+    PHI_OFFSET_L1 = 2.609122003   # layer 1
+    PHI_OFFSET_L2 = 3.351032122    # layer 2
 
     # ----------------------------------------
     #  Setup figura 3D
@@ -64,7 +61,7 @@ def mapper_plot(bundles_green, N1=45, N2=49, L=15., R=1.7):
             phi0 = (2*np.pi * i / N2 + PHI_OFFSET_L2) % (2*np.pi)
             plot_fiber(phi0, direction=+1, color="red", lw=2.0)
 
-        #print(phi0)
+        print(phi0)
 
     # ----------------------------------------
     #  Aspetto della figura
@@ -89,4 +86,4 @@ def mapper_plot(bundles_green, N1=45, N2=49, L=15., R=1.7):
 # ----------------------
 #  Esempio
 # ----------------------
-mapper_plot([30, 62])
+mapper_plot([33, 96])
