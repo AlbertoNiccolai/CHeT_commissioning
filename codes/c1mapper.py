@@ -7,8 +7,8 @@ def mapper_plot(bundles_green, N1=45, N2=49, L=15., R=1.7):
     # ----------------------------------------
     #  Calibrazione
     # ----------------------------------------
-    PHI_OFFSET_L1 = 2.0245797952    # layer 1
-    PHI_OFFSET_L2 = 3.6545057392    # layer 2
+    PHI_OFFSET_L1 = 4.118974897606805   # layer 1
+    PHI_OFFSET_L2 = 3.654505739890168    # layer 2
 
     # ----------------------------------------
     #  Setup figura 3D
@@ -53,13 +53,15 @@ def mapper_plot(bundles_green, N1=45, N2=49, L=15., R=1.7):
             # Layer 1
             i = b
             phi0 = (-2*np.pi * i / N1 + PHI_OFFSET_L1) % (2*np.pi)
-            plot_fiber(phi0, direction=-1, color="green", lw=2.0)
+            plot_fiber(phi0, direction=-1, color="blue", lw=2.0)
 
         else:
             # Layer 2
             i = b - N1
             phi0 = (2*np.pi * i / N2 + PHI_OFFSET_L2) % (2*np.pi)
-            plot_fiber(phi0, direction=+1, color="green", lw=2.0)
+            plot_fiber(phi0, direction=+1, color="red", lw=2.0)
+
+        #print(phi0)
 
     # ----------------------------------------
     #  Aspetto della figura
@@ -84,4 +86,4 @@ def mapper_plot(bundles_green, N1=45, N2=49, L=15., R=1.7):
 # ----------------------
 #  Esempio
 # ----------------------
-mapper_plot([32, 64])
+mapper_plot([27, 63])
