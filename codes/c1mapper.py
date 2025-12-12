@@ -89,4 +89,4 @@ def mapper_plot_c1(bundles_green, N1=45, N2=49, L=15., R=1.7):
 # ----------------------
 #  Esempio
 # ----------------------
-mapper_plot_c1([30, 62])
+#mapper_plot_c1([30, 62])

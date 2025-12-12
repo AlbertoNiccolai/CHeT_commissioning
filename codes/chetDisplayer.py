@@ -249,8 +249,9 @@ for event in selected_events:
     # C1
     N1_C1, N2_C1 = 45, 49
     R_C1 = 1.7
-    PHI_OFFSET_L1_C1 = 2.609122003
-    PHI_OFFSET_L2_C1 = 3.351032122
+    DELTA_ROT = np.deg2rad(10)
+    PHI_OFFSET_L1_C1 = 2.609122003 + DELTA_ROT
+    PHI_OFFSET_L2_C1 = 3.351032122 + DELTA_ROT
     #bundles_green_C1 = [37, 54]
 
     # C2
