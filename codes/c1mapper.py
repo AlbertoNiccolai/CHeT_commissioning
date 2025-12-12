@@ -1,75 +1,69 @@
-def mapper_plot(bundles_green, N1=45, N2=49, L=15.):
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
+def mapper_plot(bundles_green, N1=45, N2=49, L=15., R=1.7):
+
+    # ----------------------------------------
+    #  Calibrazione
+    # ----------------------------------------
+    PHI_OFFSET_L1 = 2.0245797952    # layer 1
+    PHI_OFFSET_L2 = 3.6545057392    # layer 2
+
+    # ----------------------------------------
+    #  Setup figura 3D
+    # ----------------------------------------
     fig = plt.figure(figsize=(16,9))
     ax = fig.add_subplot(111, projection='3d')
+    z = np.linspace(-L, L, 400)
 
-    R = 1.7
+    # ----------------------------------------
+    #  Funzione generica per disegnare una fibra
+    # ----------------------------------------
+    def plot_fiber(phi0, direction, color, lw):
+        """
+        phi0     = angolo di partenza a z = -L
+        direction = +1 (layer 2) oppure -1 (layer 1)
+        """
+        phi = (phi0 + direction * ((z + L) / (2*L)) * np.pi) % (2*np.pi)
+        x = R * np.cos(phi)
+        y = R * np.sin(phi)
+        ax.plot(x, y, z, lw=lw, color=color)
 
-    # ====================================================
-    # 1) Funzioni helper
-    # ====================================================
-    def phi_layer1(i):
-        # phi0 uniforme su [0,2π)
-        return (2*np.pi * i / N1)
-
-    def phi_layer2(i):
-        return (2*np.pi * i / N2)
-
-    # inclinazioni (versi definiti)
-    def phi_z(phi0, z, sign):
-        return phi0 + sign * ((z + L) / (2*L)) * np.pi
-
-
-    # ====================================================
-    # 2) Disegno layer 1 (blu) - verso +φ (sinistra)
-    # ====================================================
+    # ----------------------------------------
+    #  Disegna tutto il layer 1 (nero)
+    # ----------------------------------------
     for i in range(N1):
-        phi0 = phi_layer1(i)
-        z = np.linspace(-L, L, 200)
-        phi = phi_z(phi0, z, sign=+1)
-        ax.plot(R*np.cos(phi), R*np.sin(phi), z, lw=0.2, color='blue')
+        phi0 = (-2*np.pi * i / N1 + PHI_OFFSET_L1) % (2*np.pi)
+        plot_fiber(phi0, direction=-1, color="blue", lw=0.2)
 
-
-    # ====================================================
-    # 3) Disegno layer 2 (rosso) - verso -φ (destra)
-    # ====================================================
+    # ----------------------------------------
+    #  Disegna tutto il layer 2 (nero)
+    # ----------------------------------------
     for i in range(N2):
-        phi0 = phi_layer2(i)
-        z = np.linspace(-L, L, 200)
-        phi = phi_z(phi0, z, sign=-1)
-        ax.plot(R*np.cos(phi), R*np.sin(phi), z, lw=0.2, color='red')
+        phi0 = (2*np.pi * i / N2 + PHI_OFFSET_L2) % (2*np.pi)
+        plot_fiber(phi0, direction=+1, color="red", lw=0.2)
 
-
-    # ====================================================
-    # 4) Bundles verdi (liste)
-    # ====================================================
+    # ----------------------------------------
+    #  Evidenzia i bundles selezionati (verde)
+    # ----------------------------------------
     for b in bundles_green:
 
-        if b < N1:
+        if b < N1:  
             # Layer 1
             i = b
-            phi0_b = phi_layer1(i)
-            sign = +1
-            color = "blue"
+            phi0 = (-2*np.pi * i / N1 + PHI_OFFSET_L1) % (2*np.pi)
+            plot_fiber(phi0, direction=-1, color="green", lw=2.0)
+
         else:
             # Layer 2
             i = b - N1
-            phi0_b = phi_layer2(i)
-            sign = -1
-            color = "red"
+            phi0 = (2*np.pi * i / N2 + PHI_OFFSET_L2) % (2*np.pi)
+            plot_fiber(phi0, direction=+1, color="green", lw=2.0)
 
-        z = np.linspace(-L, L, 200)
-        phi_b = phi_z(phi0_b, z, sign=sign)
-
-        ax.plot(R*np.cos(phi_b), R*np.sin(phi_b), z, lw=2.5, color=color)
-
-
-    # ====================================================
-    # 5) Setup grafico
-    # ====================================================
+    # ----------------------------------------
+    #  Aspetto della figura
+    # ----------------------------------------
     ax.set_title(f"CHet C1 3D plot - Bundles fired: {bundles_green}")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
@@ -77,14 +71,17 @@ def mapper_plot(bundles_green, N1=45, N2=49, L=15.):
     ax.set_xlim(-R-1, R+1)
     ax.set_ylim(-R-1, R+1)
     ax.set_zlim(-L, L)
-
     ax.view_init(elev=7, azim=11)
-    ax.text(0,0,-20, "US", fontsize=18)
-    ax.text(0,0, 20, "DS - Readout", fontsize=18)
+
+    # Etichette US / DS
+    ax.text(0, 0, -L-2, "US", color='k', fontsize=16)
+    ax.text(0, 0, +L+1, "DS - Readout", color='k', fontsize=16)
 
     plt.tight_layout()
     plt.show()
 
 
-# Test
-mapper_plot([37, 54])
+# ----------------------
+#  Esempio
+# ----------------------
+mapper_plot([32, 64])
