@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-def mapper_plot(bundles_green, N1=59, N2=60, L=15., R=1.7):
+def mapper_plot_c2(bundles_green, N1=59, N2=60, L=15., R=1.7):
 
     # ----------------------------------------
     #  Calibrazione
@@ -86,4 +86,4 @@ def mapper_plot(bundles_green, N1=59, N2=60, L=15., R=1.7):
 # ----------------------
 #  Esempio
 # ----------------------
-mapper_plot([33, 96])
+#mapper_plot_c2([33, 96])

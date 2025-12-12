@@ -232,6 +232,18 @@ channel_bundle_map_board3 = {
     62 : 127,
 }
 
+def get_bundle_0(channel):
+    return channel_bundle_map_board0.get(channel, None)
+
+def get_bundle_1(channel):
+    return channel_bundle_map_board1.get(channel, None)
+
+def get_bundle_2(channel):
+    return channel_bundle_map_board2.get(channel, None)
+
+def get_bundle_3(channel):
+    return channel_bundle_map_board3.get(channel, None)
+
 
 
 
