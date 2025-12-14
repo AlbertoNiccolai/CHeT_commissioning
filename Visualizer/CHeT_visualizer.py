@@ -156,9 +156,11 @@ def yield_physics_events(filename, start_index=0, hits_per_event=10,
         yield phys_cnt, sel 
 
 
-def read_cumulative_hits(filename):
-    """MODE 2: Cumulative reading for heatmap."""
+def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0, 1e9)):
+    """MODE 2: Cumulative reading for heatmap with CUTS."""
     print(f"\n--- STARTING CUMULATIVE ANALYSIS ON {filename} ---")
+    print(f"Applying Cuts -> ToA: {toa_limits}, ToT: {tot_limits}")
+    
     try: mfile = midas.file_reader.MidasFile(filename)
     except Exception as e: print(f"Error: {e}"); return {}
 
@@ -180,7 +182,14 @@ def read_cumulative_hits(filename):
                     except: bid = 0
                     for hit in tev.hits:
                         toa = hit[1]
+                        tot = hit[2]
+
+                        # --- GLOBAL CUT ---
                         if toa > TOA_MAX_GLOBAL: continue
+                        
+                        # --- USER CUTS ---
+                        if not (toa_limits[0] <= toa <= toa_limits[1]): continue
+                        if not (tot_limits[0] <= tot <= tot_limits[1]): continue
 
                         b_id = get_bundle_id(bid, hit[0])
                         if b_id is not None: 
@@ -374,7 +383,7 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
     title_str = "3D Event View"
     if event_idx >= 0: title_str += f" | Event #{event_idx}"
     ax.set_title(title_str); ax.view_init(elev=20, azim=-60)
-    ax2.set_title("2D View"); ax2.add_artist(plt.Circle((0,0), R_C1, fill=False)); ax2.add_artist(plt.Circle((0,0), R_C2, fill=False, ls='--'))
+    ax2.set_title("2D View"); ax2.add_artist(plt.Circle((0,0), R_C1, fill=False)); ax2.add_artist(plt.Circle((0,0), R_C2, fill=False))
     ax2.set_xlim(-3.5,3.5); ax2.set_ylim(-3.5,3.5)
     plt.tight_layout()
     return fig
@@ -555,7 +564,26 @@ if __name__ == "__main__":
                 else: print(f"⚠️ WARNING: Mapping not found for Board {h['board']} Channel {h['ch']}")
             mapper_plot_two_cylinders(bids).show(); plt.show()
 
-    elif m=='2': mapper_plot_heatmap(read_cumulative_hits(FILENAME))
+    elif m=='2': 
+        # MODIFIED: Asking for cuts in mode 2
+        print("\n--- Optional Cuts (press Enter to skip) ---")
+        try:
+            t_min_in = input(f"Min ToA [0]: ")
+            toa_min = int(t_min_in) if t_min_in else 0
+            t_max_in = input(f"Max ToA [{TOA_MAX_GLOBAL}]: ")
+            toa_max = int(t_max_in) if t_max_in else TOA_MAX_GLOBAL
+            tot_min_in = input(f"Min ToT [0]: ")
+            tot_min = int(tot_min_in) if tot_min_in else 0
+            tot_max_in = input(f"Max ToT [No Limit]: ")
+            tot_max = int(tot_max_in) if tot_max_in else 1000000000
+            
+            # Pass cuts to function
+            mapper_plot_heatmap(read_cumulative_hits(FILENAME, 
+                                                     toa_limits=(toa_min, toa_max), 
+                                                     tot_limits=(tot_min, tot_max)))
+        except ValueError:
+            print("Invalid input.")
+
     elif m=='3': run_sequential_mode(FILENAME)
     elif m=='4': analyze_toa_tot(FILENAME)
     elif m=='5': debug_manual_mapping()
