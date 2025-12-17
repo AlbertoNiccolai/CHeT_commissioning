@@ -29,14 +29,14 @@ N2 = 49
 N3 = 59
 N4 = 60
 L_FIBER = 15.0
-
 # Geometrical Offsets
 PHI_OFFSET_C1IN  = 4.293507822806237
 PHI_OFFSET_C1OUT = 3.829038665089601
 PHI_OFFSET_C2IN  = 2.609122003
 PHI_OFFSET_C2OUT = 3.351032122
 
-TOA_MAX_GLOBAL = 1000  # Hard cutoff for Time of Arrival (Noise filter)
+TOA_MAX_GLOBAL = 500  # Hard cutoff for Time of Arrival (Noise filter)
+#the complete value is 20000 for t reference and 40000 for toa
 
 # ==========================================
 # 1. READING FUNCTIONS
@@ -75,6 +75,7 @@ def read_nth_physics_event(filename):
 
     all_hits = [] 
     for bank_name, bank in target_event.banks.items():
+        time0 = 1E18
         raw = bytes(bank.data)
         if len(raw) < 4: continue
         dtq = struct.unpack("<I", raw[:4])[0]
@@ -87,11 +88,15 @@ def read_nth_physics_event(filename):
                 for hit in timing_ev.hits:
                     # hit = (channel, toa, tot)
                     toa = hit[1]
+                    if board_id == 0 :
+                        time0 = ref 
                     if toa > TOA_MAX_GLOBAL: continue
 
                     all_hits.append({
-                        'time': ref+(toa*1E-3)/2, 
-                        'toa': toa, 
+                        'time': ref +(toa*1E-3)/2, 
+                        'time ref': ref,
+                        'toa': toa,
+                        'toa_correct': ref*1E3 +(toa)/2 - time0*1E3, 
                         'tot': hit[2],
                         'board': board_id, 
                         'ch': hit[0], 
@@ -113,6 +118,7 @@ def yield_physics_events(filename, start_index=0,
 
     phys_cnt = -1
     for event in mfile:
+        time0 = 1E18
         if event.header.is_midas_internal_event(): continue
         if event.header.event_id != 1: continue
         
@@ -130,20 +136,25 @@ def yield_physics_events(filename, start_index=0,
                     try: match = re.search(r'\d+', bank_name); bid = int(match.group()) if match else 0
                     except: bid=0
                     ref = getattr(tev, 'fine_tstamp', 0)
+                    if ref < time0:
+                        time0 = ref
                     for h in tev.hits:
                         toa = h[1]
+                        treference = ref*1E3+ toa/2 - time0*1E3 #ns
                         tot = h[2]
                         
                         # --- GLOBAL CUT ---
-                        if toa > TOA_MAX_GLOBAL: continue
+                        if treference > TOA_MAX_GLOBAL: continue
                         
                         # --- USER CUTS (Initial broad cuts) ---
-                        if not (toa_limits[0] <= toa <= toa_limits[1]): continue
+                        if not (toa_limits[0] <= treference <= toa_limits[1]): continue
                         if not (tot_limits[0] <= tot <= tot_limits[1]): continue
 
                         all_hits.append({
                             'time': ref+(toa*1E-3)/2, 
+                            'time ref': ref,
                             'toa': toa, 
+                            'toa_correct': treference, 
                             'tot': tot,
                             'board': bid, 
                             'ch': h[0],
@@ -166,6 +177,7 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
     bundle_counts = {}
     cnt = 0
     for event in mfile:
+        time0 = 1E18
         if event.header.is_midas_internal_event(): continue
         if event.header.event_id != 1: continue
         cnt += 1
@@ -176,11 +188,16 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
             dtq = struct.unpack("<I", raw[:4])[0]
             if dtq == DTQ_TIMING:
                 tev = Timing(raw)
+                ref = getattr(tev, 'fine_tstamp', 0)
+                if ref < time0:
+                    time0 = ref
                 if tev.nhits > 0:
                     try: match = re.search(r'\d+', bank_name); bid = int(match.group()) if match else 0
                     except: bid = 0
                     for hit in tev.hits:
                         toa = hit[1]
+                        treference = ref*1E3+ toa/2 - time0*1E3 #ns
+
                         tot = hit[2]
 
                         # --- GLOBAL CUT ---
@@ -212,7 +229,9 @@ def analyze_toa_tot(filename):
     tot_list = []
 
     count = 0
+
     for event in mfile:
+        time0 = 1E10
         if event.header.is_midas_internal_event(): continue
         if event.header.event_id != 1: continue
         
@@ -227,13 +246,17 @@ def analyze_toa_tot(filename):
             
             if dtq == DTQ_TIMING:
                 timing_ev = Timing(raw)
+                ref = getattr(timing_ev, 'fine_tstamp', 0)
+                if ref < time0: 
+                    time0 = ref
                 for hit in timing_ev.hits:
                     toa = hit[1]
+                    treference = ref*1E3+ toa/2 - time0*1E3 #ns
                     tot = hit[2]
                     
-                    if toa > TOA_MAX_GLOBAL: continue
+                    if treference > TOA_MAX_GLOBAL: continue
                     
-                    toa_list.append(toa)
+                    toa_list.append(treference)
                     tot_list.append(tot)
 
     print(f"\nAnalysis complete. Found {len(toa_list)} total hits.")
@@ -244,12 +267,13 @@ def analyze_toa_tot(filename):
 
     # Plot
     fig, ax = plt.subplots(figsize=(10, 7))
-    h = ax.hist2d(toa_list, tot_list, bins=[200, 200], cmap='inferno', norm=LogNorm())
+    h = ax.hist2d(toa_list, tot_list, bins=[200, 200], cmap='inferno_r', norm=LogNorm())
     cbar = plt.colorbar(h[3], ax=ax)
     cbar.set_label('Counts (Log Scale)')
 
-    ax.set_title(f"ToA vs ToT ({count} Events) - ToA Cut < {TOA_MAX_GLOBAL}")
-    ax.set_xlabel("Time of Arrival (ToA) [raw]")
+    ax.set_title(f"(ToA + Tref - T0) vs ToT ({count} Events) - ToA Cut < {TOA_MAX_GLOBAL}")
+    #ax.set_xlabel("Time of Arrival (ToA) [raw]")
+    ax.set_xlabel("Time of arrival wrt to T ref [ns]")
     ax.set_ylabel("Time over Threshold (ToT) [raw]")
     plt.tight_layout()
     plt.show()
@@ -257,46 +281,95 @@ def analyze_toa_tot(filename):
 # ==========================================
 # 1D. MANUAL DEBUG FUNCTION
 # ==========================================
-
 def debug_manual_mapping():
+    # Helper per trovare Board/Channel dato un Bundle ID
     def reverse_lookup_bundle(target_bundle):
         for b in range(4):
             for c in range(64):
                 if get_bundle_id(b, c) == target_bundle: return b, c
         return None, None
 
-    print("\n================ MANUAL FIBER DEBUGGING ================")
+    print("\n================ MANUAL FIBER DEBUGGING (MULTI) ================")
     while True:
-        print("\n1. Enter Board/Channel -> Get Bundle ID")
-        print("2. Enter Bundle ID     -> Get Board/Channel")
+        print("\n1. Enter list of 'Board,Channel' -> Get Bundle IDs")
+        print("2. Enter list of Bundle IDs      -> Get Board/Channels")
         print("q. Quit")
         choice = input(">>> Choice: ").strip().lower()
+        
         if choice == 'q': break
+        
+        bundles_to_plot = []
+        
         try:
-            bid = None
             if choice == '1':
-                brd = int(input(">>> Board ID (0-3): "))
-                chn = int(input(">>> Channel ID (0-63): "))
-                bid = get_bundle_id(brd, chn)
-                if bid is not None:
-                    print(f"✅ MAPPING FOUND: Bundle {bid}")
-                    title = f"DEBUG: Board {brd} Ch {chn} -> Bundle {bid}"
-                else: print("❌ MAPPING NOT FOUND")
+                print(">>> Enter pairs as 'Board,Channel' separated by space.")
+                print(">>> Example: 0,10 0,11 1,5")
+                raw_input = input(">>> Input: ").strip()
+                
+                # Divide l'input in tokens (es. "0,10", "0,11")
+                tokens = raw_input.replace(';', ' ').split()
+                
+                print(f"\n--- Processing {len(tokens)} items ---")
+                for token in tokens:
+                    try:
+                        if ',' not in token:
+                            print(f"⚠️  Skipping invalid format '{token}' (use Board,Channel)")
+                            continue
+                            
+                        b_str, c_str = token.split(',')
+                        brd, chn = int(b_str), int(c_str)
+                        
+                        bid = get_bundle_id(brd, chn)
+                        
+                        if bid is not None:
+                            print(f"✅ Board {brd} Ch {chn} -> Bundle {bid}")
+                            bundles_to_plot.append(bid)
+                        else:
+                            print(f"❌ Board {brd} Ch {chn} -> MAPPING NOT FOUND")
+                    except ValueError:
+                        print(f"⚠️  Error parsing '{token}'")
+
+                title = f"DEBUG: {len(bundles_to_plot)} Bundles from Board/Ch inputs"
+
             elif choice == '2':
-                bid = int(input(">>> Bundle ID: "))
-                brd, chn = reverse_lookup_bundle(bid)
-                if brd is not None:
-                    print(f"✅ MAPPING FOUND: Board {brd} Ch {chn}")
-                    title = f"DEBUG: Bundle {bid} -> Board {brd} Ch {chn}"
-                else:
-                    print("❌ MAPPING NOT FOUND"); bid=None
-            
-            if bid is not None:
-                fig = mapper_plot_two_cylinders([bid])
+                print(">>> Enter Bundle IDs separated by space or comma.")
+                print(">>> Example: 100 101 102")
+                raw_input = input(">>> Input: ").strip()
+                
+                # Rimuove virgole extra e divide
+                tokens = raw_input.replace(',', ' ').split()
+                
+                print(f"\n--- Processing {len(tokens)} items ---")
+                for token in tokens:
+                    try:
+                        bid = int(token)
+                        brd, chn = reverse_lookup_bundle(bid)
+                        
+                        if brd is not None:
+                            print(f"✅ Bundle {bid} -> Board {brd} Ch {chn}")
+                            bundles_to_plot.append(bid)
+                        else:
+                            print(f"❌ Bundle {bid} -> MAPPING NOT FOUND")
+                    except ValueError:
+                         print(f"⚠️  '{token}' is not a number")
+                
+                title = f"DEBUG: {len(bundles_to_plot)} Bundles selected directly"
+
+            else:
+                print("Invalid selection.")
+                continue
+
+            # Se abbiamo trovato almeno un bundle valido, mostriamo il grafico
+            if bundles_to_plot:
+                # Passiamo la LISTA intera di bundle alla funzione di plot
+                fig = mapper_plot_two_cylinders(bundles_to_plot)
                 plt.suptitle(title, fontsize=14, fontweight='bold')
                 plt.show()
-        except ValueError: print("Invalid input.")
+            else:
+                print("\n⚠️ No valid bundles found to plot.")
 
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
 # ==========================================
 # 2. MAPPING
 # ==========================================
@@ -329,16 +402,16 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
 
     def get_geom(b):
         if b < ranges[1]: 
-            return R_C1, 2*np.pi*(-b)/N1 + PHI_OFFSET_C1IN, -1, "red", 1
+            return R_C1, 2*np.pi*(b)/N1 + PHI_OFFSET_C1IN, -1, "red", 1
         elif b < ranges[2]: 
             b_loc = b - ranges[1]
-            return R_C1, 2*np.pi*(b_loc)/N2 + PHI_OFFSET_C1OUT, 1, "lightsalmon", 1
+            return R_C1, 2*np.pi*(-b_loc)/N2 + PHI_OFFSET_C1OUT, 1, "lightsalmon", 1
         elif b < ranges[3]: 
             b_loc = b - ranges[2]
-            return R_C2, 2*np.pi*(-b_loc)/N3 + PHI_OFFSET_C2IN, -1, "blue", 2
+            return R_C2, 2*np.pi*(b_loc)/N3 + PHI_OFFSET_C2IN, -1, "blue", 2
         elif b < ranges[4]: 
             b_loc = b - ranges[3]
-            return R_C2, 2*np.pi*(b_loc)/N4 + PHI_OFFSET_C2OUT, 1, "deepskyblue", 2
+            return R_C2, 2*np.pi*(-b_loc)/N4 + PHI_OFFSET_C2OUT, 1, "deepskyblue", 2
         return None
 
     # Background
@@ -357,8 +430,8 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
             z = np.linspace(-L, L, 100)
             phi = g[1] + g[2] * ((z+L)/(2*L))*np.pi
             ax.plot(z, g[0]*np.cos(phi), g[0]*np.sin(phi), lw=2.5, color=g[3])
-            
-            pc = g[1] + g[2] * ((0+L)/(2*L))*np.pi
+            z_0 = 15
+            pc = g[1] + g[2] * ((z_0+L)/(2*L))*np.pi
             x0, y0 = g[0]*np.cos(pc), g[0]*np.sin(pc)
             ax2.scatter(x0, y0, s=100, color=g[3], edgecolors='k', zorder=10)
             
@@ -432,7 +505,7 @@ def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
     total_fibers = N1+N2+N3+N4
 
     max_val = max(bundle_counts.values()) if bundle_counts else 1
-    cmap = cm.cividis 
+    cmap = cm.inferno.reversed() 
     norm = mcolors.Normalize(vmin=0, vmax=max_val)
     DR_VIS = 0.08
 
@@ -470,7 +543,7 @@ def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
 
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm); sm.set_array([])
     cb = plt.colorbar(sm, ax=ax2d, fraction=0.046, pad=0.04)
-    cb.set_label('Hits (Cividis)')
+    cb.set_label('Hits')
 
     ax2d.set_title(f"Cumulative Hitmap (Tot: {sum(bundle_counts.values())})")
     ax2d.set_xlim(-3.5, 3.5); ax2d.set_ylim(-3.5, 3.5)
@@ -484,7 +557,7 @@ def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
 
 def plot_event_toa_histogram(hits, ev_idx):
     """Plots histogram of ToA for the current event (blocking)."""
-    toas = [h['toa'] for h in hits]
+    toas = [h['toa_correct'] for h in hits]
     if not toas:
         print("No ToA data to plot.")
         return
@@ -492,7 +565,7 @@ def plot_event_toa_histogram(hits, ev_idx):
     plt.figure(figsize=(8, 5))
     plt.hist(toas, bins=50, color='skyblue', edgecolor='black', alpha=0.7)
     plt.title(f"Event #{ev_idx}: ToA Distribution")
-    plt.xlabel("ToA (raw)")
+    plt.xlabel("ToA corrected (raw)")
     plt.ylabel("Counts")
     plt.grid(True, alpha=0.3)
     print("\n>>> Displaying ToA Histogram. Close the plot window to continue...")
@@ -501,7 +574,8 @@ def plot_event_toa_histogram(hits, ev_idx):
 def run_sequential_mode(filename):
     try:
         start_idx = int(input("\n>>> Which physics event to start from? (0, 1...): "))
-        hits_req = int(input(">>> How many hits to visualize per event? "))
+        #hits_req_in = int(input(">>> How many hits to visualize per event? ")) 
+        hits_req = 10000000
         print("\n--- Initial Global Cuts (press Enter to skip) ---")
         t_min_in = input(f"Min ToA [0]: ")
         toa_min_g = int(t_min_in) if t_min_in else 0
@@ -542,7 +616,7 @@ def run_sequential_mode(filename):
                 parts = cut_in.split()
                 if len(parts) >= 2:
                     l_min, l_max = int(parts[0]), int(parts[1])
-                    local_hits = [h for h in hits_data if l_min <= h['toa'] <= l_max]
+                    local_hits = [h for h in hits_data if l_min <= h['toa_correct'] <= l_max]
                     print(f"--> Applied Cut [{l_min}, {l_max}]. Hits remaining: {len(local_hits)}")
                 else:
                     print("⚠️ Invalid format. Keeping all hits.")
@@ -555,7 +629,8 @@ def run_sequential_mode(filename):
         print("\n--- Visualizing Hits ---")
         bids = []
         for i, h in enumerate(sel_hits):
-            print(f"{i+1}) Board: {h['board']:<2} | Ch: {h['ch']:<2} | ToA: {h['toa']} | ToT: {h['tot']} ({h['bank']})")
+            if (h['board'] != 4):
+                print(f"{i+1}) Board: {h['board']:<2} | Ch: {h['ch']:<2} | ToA: {h['toa']} | ToT: {h['tot']} | T ref: {h['time ref']} | ToA corrected: {h['toa_correct']} | ({h['bank']})")
             bi = get_bundle_id(h['board'], h['ch'])
             if bi is not None: bids.append(bi)
             else: print(f"⚠️ WARNING: Mapping not found for Board {h['board']} Channel {h['ch']}")
