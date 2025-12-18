@@ -567,16 +567,16 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
 
     def get_geom(b):
         if b < ranges[1]: 
-            return R_C1, 2*np.pi*(b)/N1 + PHI_OFFSET_C1IN, -1, "red", 1
+            return R_C1, 2*np.pi*(-b)/N1 + PHI_OFFSET_C1IN, -1, "red", 1
         elif b < ranges[2]: 
             b_loc = b - ranges[1]
-            return R_C1, 2*np.pi*(-b_loc)/N2 + PHI_OFFSET_C1OUT, 1, "lightsalmon", 1
+            return R_C1, 2*np.pi*(+b_loc)/N2 + PHI_OFFSET_C1OUT, 1, "lightsalmon", 1
         elif b < ranges[3]: 
             b_loc = b - ranges[2]
-            return R_C2, 2*np.pi*(b_loc)/N3 + PHI_OFFSET_C2IN, -1, "blue", 2
+            return R_C2, 2*np.pi*(-b_loc)/N3 + PHI_OFFSET_C2IN, -1, "blue", 2
         elif b < ranges[4]: 
             b_loc = b - ranges[3]
-            return R_C2, 2*np.pi*(-b_loc)/N4 + PHI_OFFSET_C2OUT, 1, "deepskyblue", 2
+            return R_C2, 2*np.pi*(+b_loc)/N4 + PHI_OFFSET_C2OUT, 1, "deepskyblue", 2
         return None
 
     # Background
@@ -595,7 +595,7 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
             z = np.linspace(-L, L, 100)
             phi = g[1] + g[2] * ((z+L)/(2*L))*np.pi
             ax.plot(z, g[0]*np.cos(phi), g[0]*np.sin(phi), lw=2.5, color=g[3])
-            z_0 = 15
+            z_0 = 15 # Nota che qui vediamo la posizione downstream!
             pc = g[1] + g[2] * ((z_0+L)/(2*L))*np.pi
             x0, y0 = g[0]*np.cos(pc), g[0]*np.sin(pc)
             ax2.scatter(x0, y0, s=100, color=g[3], edgecolors='k', zorder=10)
@@ -617,6 +617,9 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
                         ax.scatter((2*L*th/np.pi)-L, R*np.cos(p2+th), R*np.sin(p2+th), s=200, marker='*', color='gold', ec='k', zorder=20)
     do_cross(c1cw, c1ccw, R_C1)
     do_cross(c2cw, c2ccw, R_C2)
+
+    ax.text(-L, 0, 0, "US", color='k', fontsize=16)
+    ax.text(+L, 0, 0, "DS", color='k', fontsize=16)
 
     ax.legend(handles=[Line2D([0],[0], color=c, lw=2, label=l) for c,l in zip(['red','lightsalmon','blue','deepskyblue'], ['C1 In','C1 Out','C2 In','C2 Out'])])
 
