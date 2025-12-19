@@ -29,14 +29,13 @@ N2 = 49
 N3 = 59
 N4 = 60
 L_FIBER = 15.0
-
 # Geometrical Offsets
 PHI_OFFSET_C1IN  = 4.293507822806237
 PHI_OFFSET_C1OUT = 3.829038665089601
 PHI_OFFSET_C2IN  = 2.609122003
 PHI_OFFSET_C2OUT = 3.351032122
 
-TOA_MAX_GLOBAL = 1000  # Hard cutoff for Time of Arrival (Noise filter)
+TOA_MAX_GLOBAL = 500  # Hard cutoff for Time of Arrival (Noise filter)
 
 # ==========================================
 # 1. READING FUNCTIONS
@@ -75,6 +74,7 @@ def read_nth_physics_event(filename):
 
     all_hits = [] 
     for bank_name, bank in target_event.banks.items():
+        time0 = 1E18
         raw = bytes(bank.data)
         if len(raw) < 4: continue
         dtq = struct.unpack("<I", raw[:4])[0]
@@ -85,13 +85,16 @@ def read_nth_physics_event(filename):
                 except: board_id = 0
                 ref = getattr(timing_ev, 'fine_tstamp', 0)
                 for hit in timing_ev.hits:
-                    # hit = (channel, toa, tot)
                     toa = hit[1]
+                    if board_id == 0 :
+                        time0 = ref 
                     if toa > TOA_MAX_GLOBAL: continue
 
                     all_hits.append({
-                        'time': ref+(toa*1E-3)/2, 
-                        'toa': toa, 
+                        'time': ref +(toa*1E-3)/2, 
+                        'time ref': ref,
+                        'toa': toa,
+                        'toa_correct': ref*1E3 +(toa)/2 - time0*1E3, 
                         'tot': hit[2],
                         'board': board_id, 
                         'ch': hit[0], 
@@ -113,6 +116,7 @@ def yield_physics_events(filename, start_index=0,
 
     phys_cnt = -1
     for event in mfile:
+        time0 = 1E18
         if event.header.is_midas_internal_event(): continue
         if event.header.event_id != 1: continue
         
@@ -130,20 +134,25 @@ def yield_physics_events(filename, start_index=0,
                     try: match = re.search(r'\d+', bank_name); bid = int(match.group()) if match else 0
                     except: bid=0
                     ref = getattr(tev, 'fine_tstamp', 0)
+                    if ref < time0:
+                        time0 = ref
                     for h in tev.hits:
                         toa = h[1]
+                        treference = ref*1E3+ toa/2 - time0*1E3 #ns
                         tot = h[2]
                         
                         # --- GLOBAL CUT ---
-                        if toa > TOA_MAX_GLOBAL: continue
+                        if treference > TOA_MAX_GLOBAL: continue
                         
                         # --- USER CUTS (Initial broad cuts) ---
-                        if not (toa_limits[0] <= toa <= toa_limits[1]): continue
+                        if not (toa_limits[0] <= treference <= toa_limits[1]): continue
                         if not (tot_limits[0] <= tot <= tot_limits[1]): continue
 
                         all_hits.append({
                             'time': ref+(toa*1E-3)/2, 
+                            'time ref': ref,
                             'toa': toa, 
+                            'toa_correct': treference, 
                             'tot': tot,
                             'board': bid, 
                             'ch': h[0],
@@ -151,51 +160,145 @@ def yield_physics_events(filename, start_index=0,
                         })
         
         if all_hits: all_hits.sort(key=lambda x: x['time'])
-        
-        # NOTA: Ritorno tutti gli hit, il taglio per visualizzazione lo facciamo dopo
         yield phys_cnt, all_hits
 
 def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0, 1e9)):
-    """MODE 2: Cumulative reading for heatmap with CUTS."""
+    """
+    MODE 2: Cumulative reading. 
+    Returns:
+    1. Bundle Counts (dict)
+    2. Global ToA list
+    3. Global ToT list
+    4. Delta ToA per event list
+    5. Delta ToT per event list
+    6. Hit Multiplicity Data (dict with lists of counts per event)
+    """
     print(f"\n--- STARTING CUMULATIVE ANALYSIS ON {filename} ---")
-    print(f"Applying Cuts -> ToA: {toa_limits}, ToT: {tot_limits}")
+    print(f"Applying Cuts -> ToA Corrected: {toa_limits}, ToT: {tot_limits}")
 
     try: mfile = midas.file_reader.MidasFile(filename)
-    except Exception as e: print(f"Error: {e}"); return {}
+    except Exception as e: print(f"Error: {e}"); return {}, [], [], [], [], {}
 
     bundle_counts = {}
+    
+    # LISTE PER LE DISTRIBUZIONI GLOBALI (Hit singole)
+    dist_toa_all = []       
+    dist_tot_all = []        
+    dist_delta_toa = []      
+    dist_delta_tot = []
+
+    # LISTE PER IL CONTEGGIO HIT PER EVENTO
+    hits_ev_total = []
+    hits_ev_c1 = []
+    hits_ev_c2 = []
+    hits_ev_l1 = []
+    hits_ev_l2 = []
+    hits_ev_l3 = []
+    hits_ev_l4 = []
+
+    # Indici per i layer
+    idx_l2 = N1
+    idx_l3 = N1 + N2
+    idx_l4 = N1 + N2 + N3
+    idx_end = N1 + N2 + N3 + N4
+
     cnt = 0
     for event in mfile:
+        time0 = 1E18
         if event.header.is_midas_internal_event(): continue
         if event.header.event_id != 1: continue
         cnt += 1
         if cnt % 100 == 0: print(f"Processed {cnt} events...", end='\r')
+        
+        # Liste temporanee per calcolare il delta DELL'EVENTO CORRENTE
+        event_valid_toas = []
+        event_valid_tots = []
+        
+        # Contatori hit per questo evento
+        c_tot = 0
+        c_c1, c_c2 = 0, 0
+        c_l1, c_l2, c_l3, c_l4 = 0, 0, 0, 0
+
         for bank_name, bank in event.banks.items():
             raw = bytes(bank.data)
             if len(raw) < 4: continue
             dtq = struct.unpack("<I", raw[:4])[0]
             if dtq == DTQ_TIMING:
                 tev = Timing(raw)
+                ref = getattr(tev, 'fine_tstamp', 0)
+                if ref < time0: time0 = ref 
+                
                 if tev.nhits > 0:
                     try: match = re.search(r'\d+', bank_name); bid = int(match.group()) if match else 0
                     except: bid = 0
                     for hit in tev.hits:
                         toa = hit[1]
                         tot = hit[2]
+                        treference = ref*1E3+ toa/2 - time0*1E3 
 
-                        # --- GLOBAL CUT ---
+                        # Global Cut on Noise
                         if toa > TOA_MAX_GLOBAL: continue
-                        
-                        # --- USER CUTS ---
-                        if not (toa_limits[0] <= toa <= toa_limits[1]): continue
-                        if not (tot_limits[0] <= tot <= tot_limits[1]): continue
 
+                        # User Cuts
+                        if not (toa_limits[0] <= treference <= toa_limits[1]): continue
+                        if not (tot_limits[0] <= tot <= tot_limits[1]): continue
+                        
+                        # --- Hit accettata ---
+                        dist_toa_all.append(treference)
+                        dist_tot_all.append(tot)
+                        event_valid_toas.append(treference)
+                        event_valid_tots.append(tot)
+
+                        # Mappatura e Conteggi
                         b_id = get_bundle_id(bid, hit[0])
                         if b_id is not None: 
                             bundle_counts[b_id] = bundle_counts.get(b_id, 0) + 1
+                            
+                            c_tot += 1
+                            
+                            # Logica Layers/Cilindri
+                            if b_id < idx_l2:      # Layer 1 (C1 In)
+                                c_l1 += 1
+                                c_c1 += 1
+                            elif b_id < idx_l3:    # Layer 2 (C1 Out)
+                                c_l2 += 1
+                                c_c1 += 1
+                            elif b_id < idx_l4:    # Layer 3 (C2 In)
+                                c_l3 += 1
+                                c_c2 += 1
+                            elif b_id < idx_end:   # Layer 4 (C2 Out)
+                                c_l4 += 1
+                                c_c2 += 1
+
+        # Fine evento: Calcolo delta e salvataggio conteggi
+        if event_valid_toas:
+            dist_delta_toa.append(max(event_valid_toas) - min(event_valid_toas))
+        if event_valid_tots:
+            dist_delta_tot.append(max(event_valid_tots) - min(event_valid_tots))
+        
+        # Salviamo i contatori anche se sono 0 (per statistica)
+        hits_ev_total.append(c_tot)
+        hits_ev_c1.append(c_c1)
+        hits_ev_c2.append(c_c2)
+        hits_ev_l1.append(c_l1)
+        hits_ev_l2.append(c_l2)
+        hits_ev_l3.append(c_l3)
+        hits_ev_l4.append(c_l4)
 
     print(f"\n✅ Finished. Total events: {cnt}. Active bundles: {len(bundle_counts)}")
-    return bundle_counts
+    print(f"   Hits passing cuts: {len(dist_toa_all)}")
+    
+    hit_counts_data = {
+        'total': hits_ev_total,
+        'c1': hits_ev_c1,
+        'c2': hits_ev_c2,
+        'l1': hits_ev_l1,
+        'l2': hits_ev_l2,
+        'l3': hits_ev_l3,
+        'l4': hits_ev_l4
+    }
+
+    return bundle_counts, dist_toa_all, dist_tot_all, dist_delta_toa, dist_delta_tot, hit_counts_data
 
 def analyze_toa_tot(filename):
     """MODE 4: ToA vs ToT 2D Histogram."""
@@ -212,7 +315,9 @@ def analyze_toa_tot(filename):
     tot_list = []
 
     count = 0
+
     for event in mfile:
+        time0 = 1E10
         if event.header.is_midas_internal_event(): continue
         if event.header.event_id != 1: continue
         
@@ -227,13 +332,17 @@ def analyze_toa_tot(filename):
             
             if dtq == DTQ_TIMING:
                 timing_ev = Timing(raw)
+                ref = getattr(timing_ev, 'fine_tstamp', 0)
+                if ref < time0: 
+                    time0 = ref
                 for hit in timing_ev.hits:
                     toa = hit[1]
+                    treference = ref*1E3+ toa/2 - time0*1E3 #ns
                     tot = hit[2]
                     
-                    if toa > TOA_MAX_GLOBAL: continue
+                    if treference > TOA_MAX_GLOBAL: continue
                     
-                    toa_list.append(toa)
+                    toa_list.append(treference)
                     tot_list.append(tot)
 
     print(f"\nAnalysis complete. Found {len(toa_list)} total hits.")
@@ -244,12 +353,12 @@ def analyze_toa_tot(filename):
 
     # Plot
     fig, ax = plt.subplots(figsize=(10, 7))
-    h = ax.hist2d(toa_list, tot_list, bins=[200, 200], cmap='inferno', norm=LogNorm())
+    h = ax.hist2d(toa_list, tot_list, bins=[300, 300], cmap='inferno_r', norm=LogNorm())
     cbar = plt.colorbar(h[3], ax=ax)
     cbar.set_label('Counts (Log Scale)')
 
-    ax.set_title(f"ToA vs ToT ({count} Events) - ToA Cut < {TOA_MAX_GLOBAL}")
-    ax.set_xlabel("Time of Arrival (ToA) [raw]")
+    ax.set_title(f"(ToA + Tref - T0) vs ToT ({count} Events) - ToA Cut < {TOA_MAX_GLOBAL}")
+    ax.set_xlabel("Time of arrival wrt to T ref [ns]")
     ax.set_ylabel("Time over Threshold (ToT) [raw]")
     plt.tight_layout()
     plt.show()
@@ -257,7 +366,6 @@ def analyze_toa_tot(filename):
 # ==========================================
 # 1D. MANUAL DEBUG FUNCTION
 # ==========================================
-
 def debug_manual_mapping():
     def reverse_lookup_bundle(target_bundle):
         for b in range(4):
@@ -265,37 +373,44 @@ def debug_manual_mapping():
                 if get_bundle_id(b, c) == target_bundle: return b, c
         return None, None
 
-    print("\n================ MANUAL FIBER DEBUGGING ================")
+    print("\n================ MANUAL FIBER DEBUGGING (MULTI) ================")
     while True:
-        print("\n1. Enter Board/Channel -> Get Bundle ID")
-        print("2. Enter Bundle ID     -> Get Board/Channel")
+        print("\n1. Enter list of 'Board,Channel' -> Get Bundle IDs")
+        print("2. Enter list of Bundle IDs      -> Get Board/Channels")
         print("q. Quit")
         choice = input(">>> Choice: ").strip().lower()
         if choice == 'q': break
+        bundles_to_plot = []
         try:
-            bid = None
             if choice == '1':
-                brd = int(input(">>> Board ID (0-3): "))
-                chn = int(input(">>> Channel ID (0-63): "))
-                bid = get_bundle_id(brd, chn)
-                if bid is not None:
-                    print(f"✅ MAPPING FOUND: Bundle {bid}")
-                    title = f"DEBUG: Board {brd} Ch {chn} -> Bundle {bid}"
-                else: print("❌ MAPPING NOT FOUND")
+                raw_input = input(">>> Enter pairs (e.g. 0,10 0,11): ").strip()
+                tokens = raw_input.replace(';', ' ').split()
+                for token in tokens:
+                    try:
+                        if ',' not in token: continue
+                        b_str, c_str = token.split(',')
+                        bid = get_bundle_id(int(b_str), int(c_str))
+                        if bid is not None: bundles_to_plot.append(bid)
+                    except ValueError: pass
+                title = f"DEBUG: {len(bundles_to_plot)} Bundles"
+
             elif choice == '2':
-                bid = int(input(">>> Bundle ID: "))
-                brd, chn = reverse_lookup_bundle(bid)
-                if brd is not None:
-                    print(f"✅ MAPPING FOUND: Board {brd} Ch {chn}")
-                    title = f"DEBUG: Bundle {bid} -> Board {brd} Ch {chn}"
-                else:
-                    print("❌ MAPPING NOT FOUND"); bid=None
-            
-            if bid is not None:
-                fig = mapper_plot_two_cylinders([bid])
+                raw_input = input(">>> Enter Bundle IDs (e.g. 100 101): ").strip()
+                tokens = raw_input.replace(',', ' ').split()
+                for token in tokens:
+                    try:
+                        bid = int(token)
+                        brd, chn = reverse_lookup_bundle(bid)
+                        if brd is not None: bundles_to_plot.append(bid)
+                    except ValueError: pass
+                title = f"DEBUG: {len(bundles_to_plot)} Bundles"
+            else: continue
+
+            if bundles_to_plot:
+                fig = mapper_plot_two_cylinders(bundles_to_plot)
                 plt.suptitle(title, fontsize=14, fontweight='bold')
                 plt.show()
-        except ValueError: print("Invalid input.")
+        except Exception as e: print(f"Error: {e}")
 
 # ==========================================
 # 2. MAPPING
@@ -315,8 +430,131 @@ def get_bundle_id(board_id, channel_id):
     else: return val
 
 # ==========================================
-# 3A. PLOTTING SINGLE EVENT (3D + 2D)
+# 3. PLOTTING
 # ==========================================
+
+def plot_run_distributions(toa_list, tot_list, delta_toa_list, delta_tot_list, cuts_info):
+    """Plot global histograms: Single hits (Row 1) and Event Deltas (Row 2)."""
+    if not toa_list:
+        print("⚠️ No data to plot for distributions.")
+        return
+
+    # Helper per calcolare i bin dinamici
+    def get_dynamic_bins(data_list):
+        if not data_list: return 100
+        mn, mx = min(data_list), max(data_list)
+        rng = mx - mn
+        if rng <= 0: return 100
+        nbins = int(2*rng)
+        if nbins < 10: nbins = 10
+        if nbins > 120: nbins = 120
+        return nbins
+
+    # Crea griglia 2x2
+    fig, ax = plt.subplots(2, 2, figsize=(14, 10))
+
+    # --- ROW 1: Single Hit Distributions ---
+    
+    # Plot ToA Corrected
+    b_toa = get_dynamic_bins(toa_list)
+    ax[0, 0].hist(toa_list, bins=b_toa, color='teal', alpha=0.7, edgecolor='k', linewidth=0.5)
+    ax[0, 0].set_title(f"Global Corrected ToA (Single Hits)\n(Cut: {cuts_info['toa']}) - Bins: {b_toa}")
+    ax[0, 0].set_xlabel("ToA Corrected (Ref + ToA/2 - T0) [ns]")
+    ax[0, 0].set_ylabel("Counts")
+    ax[0, 0].grid(True, alpha=0.3)
+    ax[0, 0].set_yscale('log')
+
+    # Plot ToT
+    b_tot = get_dynamic_bins(tot_list)
+    ax[0, 1].hist(tot_list, bins=b_tot, color='orange', alpha=0.7, edgecolor='k', linewidth=0.5)
+    ax[0, 1].set_title(f"Global ToT (Single Hits)\n(Cut: {cuts_info['tot']}) - Bins: {b_tot}")
+    ax[0, 1].set_xlabel("Time over Threshold (ToT) [raw]")
+    ax[0, 1].set_ylabel("Counts")
+    ax[0, 1].grid(True, alpha=0.3)
+    ax[0, 1].set_yscale('log')
+
+    # --- ROW 2: Event Delta Distributions (Max - Min) ---
+
+    # Plot Delta ToA
+    b_dtoa = get_dynamic_bins(delta_toa_list)
+    ax[1, 0].hist(delta_toa_list, bins=b_dtoa, color='darkgreen', alpha=0.7, edgecolor='k', linewidth=0.5)
+    ax[1, 0].set_title(f"Event ToA Range (Max - Min)\nEvents with >0 hits - Bins: {b_dtoa}")
+    ax[1, 0].set_xlabel("Delta ToA [ns]")
+    ax[1, 0].set_ylabel("Events")
+    ax[1, 0].grid(True, alpha=0.3)
+    ax[1, 0].set_yscale('log')
+
+    # Plot Delta ToT
+    b_dtot = get_dynamic_bins(delta_tot_list)
+    ax[1, 1].hist(delta_tot_list, bins=b_dtot, color='darkred', alpha=0.7, edgecolor='k', linewidth=0.5)
+    ax[1, 1].set_title(f"Event ToT Range (Max - Min)\nEvents with >0 hits - Bins: {b_dtot}")
+    ax[1, 1].set_xlabel("Delta ToT [raw]")
+    ax[1, 1].set_ylabel("Events")
+    ax[1, 1].grid(True, alpha=0.3)
+    ax[1, 1].set_yscale('log')
+
+    plt.tight_layout()
+    print("\n>>> Displaying Global Distributions...")
+    plt.show()
+
+def plot_hit_multiplicity(counts_data):
+    """
+    Plots the multiplicity of hits per event:
+    1. Total hits per event
+    2. Comparison between Cylinder 1 and Cylinder 2
+    3. Comparison between the 4 Layers
+    """
+    if not counts_data['total']:
+        print("⚠️ No multiplicity data to plot.")
+        return
+        
+    fig = plt.figure(figsize=(15, 9))
+    gs = GridSpec(2, 2)
+    
+    # 1. Total Hits
+    ax1 = fig.add_subplot(gs[0, :]) # Full width top
+    max_h = max(counts_data['total'])
+    bins = range(0, max_h + 2)
+    ax1.hist(counts_data['total'], bins=bins, color='black', alpha=0.6, edgecolor='k', label='Total')
+    ax1.set_title(f"Total Hits per Event (Max: {max_h})")
+    ax1.set_xlabel("Number of Hits")
+    ax1.set_ylabel("Count")
+    ax1.set_yscale('log')
+    ax1.grid(True, which="both", ls="-", alpha=0.2)
+    
+    # 2. Cylinders Comparison
+    ax2 = fig.add_subplot(gs[1, 0])
+    max_c = max(max(counts_data['c1']), max(counts_data['c2']))
+    bins_c = range(0, max_c + 2)
+    ax2.hist(counts_data['c1'], bins=bins_c, color='red', alpha=0.5, label='Cyl 1', histtype='stepfilled', edgecolor='red')
+    ax2.hist(counts_data['c2'], bins=bins_c, color='blue', alpha=0.5, label='Cyl 2', histtype='stepfilled', edgecolor='blue')
+    ax2.set_title("Hits per Cylinder")
+    ax2.set_xlabel("Number of Hits")
+    ax2.set_ylabel("Count")
+    ax2.set_yscale('log')
+    ax2.legend()
+    ax2.grid(True, which="both", ls="-", alpha=0.2)
+
+    # 3. Layers Comparison
+    ax3 = fig.add_subplot(gs[1, 1])
+    max_l = max([max(counts_data[k]) for k in ['l1','l2','l3','l4']])
+    bins_l = range(0, max_l + 2)
+    
+    ax3.hist(counts_data['l1'], bins=bins_l, histtype='step', lw=2, color='red', label='L1 (C1 In)')
+    ax3.hist(counts_data['l2'], bins=bins_l, histtype='step', lw=2, color='salmon', label='L2 (C1 Out)')
+    ax3.hist(counts_data['l3'], bins=bins_l, histtype='step', lw=2, color='blue', label='L3 (C2 In)')
+    ax3.hist(counts_data['l4'], bins=bins_l, histtype='step', lw=2, color='cyan', label='L4 (C2 Out)')
+    
+    ax3.set_title("Hits per Layer")
+    ax3.set_xlabel("Number of Hits")
+    ax3.set_ylabel("Count")
+    ax3.set_yscale('log')
+    ax3.legend()
+    ax3.grid(True, which="both", ls="-", alpha=0.2)
+
+    plt.tight_layout()
+    print("\n>>> Displaying Hit Multiplicity plots...")
+    plt.show()
 
 def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER, event_idx=-1):
     fig = plt.figure(figsize=(18, 8))
@@ -332,13 +570,13 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
             return R_C1, 2*np.pi*(-b)/N1 + PHI_OFFSET_C1IN, -1, "red", 1
         elif b < ranges[2]: 
             b_loc = b - ranges[1]
-            return R_C1, 2*np.pi*(b_loc)/N2 + PHI_OFFSET_C1OUT, 1, "lightsalmon", 1
+            return R_C1, 2*np.pi*(+b_loc)/N2 + PHI_OFFSET_C1OUT, 1, "lightsalmon", 1
         elif b < ranges[3]: 
             b_loc = b - ranges[2]
             return R_C2, 2*np.pi*(-b_loc)/N3 + PHI_OFFSET_C2IN, -1, "blue", 2
         elif b < ranges[4]: 
             b_loc = b - ranges[3]
-            return R_C2, 2*np.pi*(b_loc)/N4 + PHI_OFFSET_C2OUT, 1, "deepskyblue", 2
+            return R_C2, 2*np.pi*(+b_loc)/N4 + PHI_OFFSET_C2OUT, 1, "deepskyblue", 2
         return None
 
     # Background
@@ -357,8 +595,8 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
             z = np.linspace(-L, L, 100)
             phi = g[1] + g[2] * ((z+L)/(2*L))*np.pi
             ax.plot(z, g[0]*np.cos(phi), g[0]*np.sin(phi), lw=2.5, color=g[3])
-            
-            pc = g[1] + g[2] * ((0+L)/(2*L))*np.pi
+            z_0 = 15 # Nota che qui vediamo la posizione downstream!
+            pc = g[1] + g[2] * ((z_0+L)/(2*L))*np.pi
             x0, y0 = g[0]*np.cos(pc), g[0]*np.sin(pc)
             ax2.scatter(x0, y0, s=100, color=g[3], edgecolors='k', zorder=10)
             
@@ -380,6 +618,9 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
     do_cross(c1cw, c1ccw, R_C1)
     do_cross(c2cw, c2ccw, R_C2)
 
+    ax.text(-L, 0, 0, "US", color='k', fontsize=16)
+    ax.text(+L, 0, 0, "DS", color='k', fontsize=16)
+
     ax.legend(handles=[Line2D([0],[0], color=c, lw=2, label=l) for c,l in zip(['red','lightsalmon','blue','deepskyblue'], ['C1 In','C1 Out','C2 In','C2 Out'])])
 
     title_str = "3D Event View"
@@ -389,10 +630,6 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
     ax2.set_xlim(-3.5,3.5); ax2.set_ylim(-3.5,3.5)
     plt.tight_layout()
     return fig
-
-# ==========================================
-# 3B. PLOTTING HEATMAP
-# ==========================================
 
 def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
     fig = plt.figure(figsize=(18, 9))
@@ -432,7 +669,7 @@ def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
     total_fibers = N1+N2+N3+N4
 
     max_val = max(bundle_counts.values()) if bundle_counts else 1
-    cmap = cm.cividis 
+    cmap = cm.inferno.reversed() 
     norm = mcolors.Normalize(vmin=0, vmax=max_val)
     DR_VIS = 0.08
 
@@ -470,7 +707,7 @@ def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
 
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm); sm.set_array([])
     cb = plt.colorbar(sm, ax=ax2d, fraction=0.046, pad=0.04)
-    cb.set_label('Hits (Cividis)')
+    cb.set_label('Hits')
 
     ax2d.set_title(f"Cumulative Hitmap (Tot: {sum(bundle_counts.values())})")
     ax2d.set_xlim(-3.5, 3.5); ax2d.set_ylim(-3.5, 3.5)
@@ -479,12 +716,12 @@ def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
     plt.tight_layout(); plt.show()
 
 # ==========================================
-# 4. SEQUENTIAL RUNNER (MODIFIED)
+# 4. SEQUENTIAL RUNNER
 # ==========================================
 
 def plot_event_toa_histogram(hits, ev_idx):
     """Plots histogram of ToA for the current event (blocking)."""
-    toas = [h['toa'] for h in hits]
+    toas = [h['toa_correct'] for h in hits]
     if not toas:
         print("No ToA data to plot.")
         return
@@ -492,16 +729,16 @@ def plot_event_toa_histogram(hits, ev_idx):
     plt.figure(figsize=(8, 5))
     plt.hist(toas, bins=50, color='skyblue', edgecolor='black', alpha=0.7)
     plt.title(f"Event #{ev_idx}: ToA Distribution")
-    plt.xlabel("ToA (raw)")
+    plt.xlabel("ToA corrected (raw)")
     plt.ylabel("Counts")
     plt.grid(True, alpha=0.3)
     print("\n>>> Displaying ToA Histogram. Close the plot window to continue...")
-    plt.show() # Blocking
+    plt.show()
 
 def run_sequential_mode(filename):
     try:
         start_idx = int(input("\n>>> Which physics event to start from? (0, 1...): "))
-        hits_req = int(input(">>> How many hits to visualize per event? "))
+        hits_req = 10000000
         print("\n--- Initial Global Cuts (press Enter to skip) ---")
         t_min_in = input(f"Min ToA [0]: ")
         toa_min_g = int(t_min_in) if t_min_in else 0
@@ -515,11 +752,6 @@ def run_sequential_mode(filename):
         print("Invalid input."); return
 
     print(f"\n--- Starting Sequential Mode from event #{start_idx} ---")
-    print(f"Global Cuts: ToA [{toa_min_g}-{toa_max_g}], ToT [{tot_min_g}-{tot_max_g}]")
-    print("Cycle: Hist -> User Cut -> Plot Geometry -> Next")
-    print("Type 'q' and [ENTER] to quit.\n")
-
-    # Create generator with broad cuts
     gen = yield_physics_events(filename, start_index=start_idx, 
                                toa_limits=(toa_min_g, toa_max_g), 
                                tot_limits=(tot_min_g, tot_max_g))
@@ -528,47 +760,36 @@ def run_sequential_mode(filename):
         print(f"\n========================================")
         print(f"--> Physics Event #{ev_idx} (Total Hits in range: {len(hits_data)})")
         print("========================================")
-        
-        # 1. Show Histogram first
         plot_event_toa_histogram(hits_data, ev_idx)
-        
-        # 2. Ask for specific cut for this event
         print(f"Current Range: {toa_min_g} - {toa_max_g}")
         cut_in = input(">>> Enter specific ToA cut (e.g. '100 200') or [Enter] to keep all: ").strip()
-        
         local_hits = hits_data
         if cut_in:
             try:
                 parts = cut_in.split()
                 if len(parts) >= 2:
                     l_min, l_max = int(parts[0]), int(parts[1])
-                    local_hits = [h for h in hits_data if l_min <= h['toa'] <= l_max]
+                    local_hits = [h for h in hits_data if l_min <= h['toa_correct'] <= l_max]
                     print(f"--> Applied Cut [{l_min}, {l_max}]. Hits remaining: {len(local_hits)}")
-                else:
-                    print("⚠️ Invalid format. Keeping all hits.")
-            except ValueError:
-                print("⚠️ Invalid numbers. Keeping all hits.")
+                else: print("⚠️ Invalid format.")
+            except ValueError: print("⚠️ Invalid numbers.")
         
-        # 3. Apply limit on number of hits to visualize
         sel_hits = local_hits[:hits_req]
-        
         print("\n--- Visualizing Hits ---")
         bids = []
         for i, h in enumerate(sel_hits):
-            print(f"{i+1}) Board: {h['board']:<2} | Ch: {h['ch']:<2} | ToA: {h['toa']} | ToT: {h['tot']} ({h['bank']})")
+            if (h['board'] != 4):
+                print(f"{i+1}) Board: {h['board']:<2} | Ch: {h['ch']:<2} | ToA: {h['toa']} | ToT: {h['tot']} | T ref: {h['time ref']} | ToA corrected: {h['toa_correct']} | ({h['bank']})")
             bi = get_bundle_id(h['board'], h['ch'])
             if bi is not None: bids.append(bi)
             else: print(f"⚠️ WARNING: Mapping not found for Board {h['board']} Channel {h['ch']}")
         
-        # 4. Plot Geometry
         fig = mapper_plot_two_cylinders(bids, event_idx=ev_idx)
         plt.show(block=False) 
         plt.pause(0.1) 
-        
         user_cmd = input("\n([Enter]=Next, 'q'=Quit) >>> ").lower().strip()
         plt.close(fig)
         if user_cmd == 'q': break
-        
     print("End.")
 
 # ==========================================
@@ -576,7 +797,6 @@ def run_sequential_mode(filename):
 # ==========================================
 
 if __name__ == "__main__":
-    # Check if filename is passed as argument
     if len(sys.argv) > 1:
         FILENAME = sys.argv[1]
         print(f"File loaded: {FILENAME}")
@@ -586,7 +806,6 @@ if __name__ == "__main__":
             print("No file provided. Exiting.")
             sys.exit(0)
 
-    # Check file existence
     if not os.path.exists(FILENAME):
         print(f"ERROR: File '{FILENAME}' not found.")
         sys.exit(1)
@@ -595,7 +814,7 @@ if __name__ == "__main__":
     print("       MIDAS FIBER ANALYZER            ")
     print("========================================")
     print("1. Single Event (Specific)")
-    print("2. Cumulative Histogram (Heatmap)")
+    print("2. Cumulative Histogram (Heatmap & Cuts Analysis)")
     print("3. Sequential (Hist -> Cut -> Plot)")
     print("4. ToA vs ToT 2D Histogram")
     print("5. Manual Debug (Check Mapping)")
@@ -614,20 +833,35 @@ if __name__ == "__main__":
             mapper_plot_two_cylinders(bids).show(); plt.show()
 
     elif m=='2': 
-        print("\n--- Optional Cuts (press Enter to skip) ---")
+        print("\n--- Optional Cuts for Cumulative Analysis ---")
         try:
-            t_min_in = input(f"Min ToA [0]: ")
+            t_min_in = input(f"Min Corrected ToA [0]: ")
             toa_min = int(t_min_in) if t_min_in else 0
-            t_max_in = input(f"Max ToA [{TOA_MAX_GLOBAL}]: ")
+            t_max_in = input(f"Max Corrected ToA [{TOA_MAX_GLOBAL}]: ")
             toa_max = int(t_max_in) if t_max_in else TOA_MAX_GLOBAL
+            
             tot_min_in = input(f"Min ToT [0]: ")
             tot_min = int(tot_min_in) if tot_min_in else 0
             tot_max_in = input(f"Max ToT [No Limit]: ")
             tot_max = int(tot_max_in) if tot_max_in else 1000000000
             
-            mapper_plot_heatmap(read_cumulative_hits(FILENAME, 
-                                                     toa_limits=(toa_min, toa_max), 
-                                                     tot_limits=(tot_min, tot_max)))
+            # Recupera conteggi e liste distribuzioni
+            counts, list_toa, list_tot, list_delta_toa, list_delta_tot, list_hits_data = read_cumulative_hits(
+                FILENAME, 
+                toa_limits=(toa_min, toa_max), 
+                tot_limits=(tot_min, tot_max)
+            )
+            
+            # Plot Heatmap
+            mapper_plot_heatmap(counts)
+            
+            # Plot Distributions
+            cuts_str = {'toa': f"{toa_min}-{toa_max}", 'tot': f"{tot_min}-{tot_max}"}
+            plot_run_distributions(list_toa, list_tot, list_delta_toa, list_delta_tot, cuts_str)
+            
+            # Plot Hit Multiplicity
+            plot_hit_multiplicity(list_hits_data)
+
         except ValueError:
             print("Invalid input.")
 
