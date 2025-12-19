@@ -29,11 +29,15 @@ N2 = 49
 N3 = 59
 N4 = 60
 L_FIBER = 15.0
+
 # Geometrical Offsets
-PHI_OFFSET_C1IN  = 4.293507822806237
-PHI_OFFSET_C1OUT = 3.829038665089601
-PHI_OFFSET_C2IN  = 2.609122003
-PHI_OFFSET_C2OUT = 3.351032122
+OFFSET_EXP = 40 * np.pi/180
+DELTA1 = 1.26732381973286972
+DELTA2 = 1.42022338200000001
+PHI_OFFSET_C1IN  = 4.293507822806237 + DELTA1 + OFFSET_EXP
+PHI_OFFSET_C1OUT = 3.829038665089601 + DELTA1 + OFFSET_EXP
+PHI_OFFSET_C2IN  = 2.609122003 + DELTA2 + OFFSET_EXP
+PHI_OFFSET_C2OUT = 3.351032122 + DELTA2 + OFFSET_EXP
 
 TOA_MAX_GLOBAL = 500  # Hard cutoff for Time of Arrival (Noise filter)
 
@@ -50,7 +54,7 @@ def read_nth_physics_event(filename):
         print("Invalid input.")
         return []
     if req_index < 0: return []
-
+    
     print(f"\nScanning file {filename}...")
     try:
         mfile = midas.file_reader.MidasFile(filename)
@@ -83,6 +87,11 @@ def read_nth_physics_event(filename):
             if timing_ev.nhits > 0:
                 try: match = re.search(r'\d+', bank_name); board_id = int(match.group()) if match else 0
                 except: board_id = 0
+                
+                # --- FILTER: EXCLUDE BOARD >= 4 ---
+                if board_id >= 4: continue
+                # ----------------------------------
+
                 ref = getattr(timing_ev, 'fine_tstamp', 0)
                 for hit in timing_ev.hits:
                     toa = hit[1]
@@ -108,12 +117,11 @@ def read_nth_physics_event(filename):
     print("\n--- Selected Hits ---")
     return sel
 
-def yield_physics_events(filename, start_index=0, 
-                         toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0, 1e9)):
+def yield_physics_events(filename, start_index=0, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0, 1e9)):
     """MODE 3 Generator: Yields ALL hits for the event within global cuts."""
     try: mfile = midas.file_reader.MidasFile(filename)
     except Exception as e: print(f"File Error: {e}"); return
-
+    
     phys_cnt = -1
     for event in mfile:
         time0 = 1E18
@@ -133,6 +141,11 @@ def yield_physics_events(filename, start_index=0,
                 if tev.nhits > 0:
                     try: match = re.search(r'\d+', bank_name); bid = int(match.group()) if match else 0
                     except: bid=0
+
+                    # --- FILTER: EXCLUDE BOARD >= 4 ---
+                    if bid >= 4: continue
+                    # ----------------------------------
+
                     ref = getattr(tev, 'fine_tstamp', 0)
                     if ref < time0:
                         time0 = ref
@@ -164,7 +177,7 @@ def yield_physics_events(filename, start_index=0,
 
 def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0, 1e9)):
     """
-    MODE 2: Cumulative reading. 
+    MODE 2: Cumulative reading.
     Returns:
     1. Bundle Counts (dict)
     2. Global ToA list
@@ -172,20 +185,27 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
     4. Delta ToA per event list
     5. Delta ToT per event list
     6. Hit Multiplicity Data (dict with lists of counts per event)
+    7. ToA by Board (dict)
+    8. ToT by Board (dict)
     """
     print(f"\n--- STARTING CUMULATIVE ANALYSIS ON {filename} ---")
     print(f"Applying Cuts -> ToA Corrected: {toa_limits}, ToT: {tot_limits}")
-
+    print("⚠️  FILTER ACTIVE: Skipping Boards >= 4")
+    
     try: mfile = midas.file_reader.MidasFile(filename)
-    except Exception as e: print(f"Error: {e}"); return {}, [], [], [], [], {}
+    except Exception as e: print(f"Error: {e}"); return {}, [], [], [], [], {}, {}, {}
 
     bundle_counts = {}
-    
+
     # LISTE PER LE DISTRIBUZIONI GLOBALI (Hit singole)
     dist_toa_all = []       
     dist_tot_all = []        
     dist_delta_toa = []      
     dist_delta_tot = []
+
+    # NEW: LISTE PER BOARD
+    dist_toa_by_board = {}
+    dist_tot_by_board = {}
 
     # LISTE PER IL CONTEGGIO HIT PER EVENTO
     hits_ev_total = []
@@ -231,6 +251,11 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
                 if tev.nhits > 0:
                     try: match = re.search(r'\d+', bank_name); bid = int(match.group()) if match else 0
                     except: bid = 0
+                    
+                    # --- FILTER: EXCLUDE BOARD >= 4 ---
+                    if bid >= 4: continue
+                    # ----------------------------------
+
                     for hit in tev.hits:
                         toa = hit[1]
                         tot = hit[2]
@@ -249,26 +274,27 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
                         event_valid_toas.append(treference)
                         event_valid_tots.append(tot)
 
+                        # --- Salvataggio per Board ---
+                        if bid not in dist_toa_by_board: dist_toa_by_board[bid] = []
+                        if bid not in dist_tot_by_board: dist_tot_by_board[bid] = []
+                        dist_toa_by_board[bid].append(treference)
+                        dist_tot_by_board[bid].append(tot)
+
                         # Mappatura e Conteggi
                         b_id = get_bundle_id(bid, hit[0])
                         if b_id is not None: 
                             bundle_counts[b_id] = bundle_counts.get(b_id, 0) + 1
-                            
                             c_tot += 1
                             
                             # Logica Layers/Cilindri
                             if b_id < idx_l2:      # Layer 1 (C1 In)
-                                c_l1 += 1
-                                c_c1 += 1
+                                c_l1 += 1; c_c1 += 1
                             elif b_id < idx_l3:    # Layer 2 (C1 Out)
-                                c_l2 += 1
-                                c_c1 += 1
+                                c_l2 += 1; c_c1 += 1
                             elif b_id < idx_l4:    # Layer 3 (C2 In)
-                                c_l3 += 1
-                                c_c2 += 1
+                                c_l3 += 1; c_c2 += 1
                             elif b_id < idx_end:   # Layer 4 (C2 Out)
-                                c_l4 += 1
-                                c_c2 += 1
+                                c_l4 += 1; c_c2 += 1
 
         # Fine evento: Calcolo delta e salvataggio conteggi
         if event_valid_toas:
@@ -280,25 +306,19 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
         hits_ev_total.append(c_tot)
         hits_ev_c1.append(c_c1)
         hits_ev_c2.append(c_c2)
-        hits_ev_l1.append(c_l1)
-        hits_ev_l2.append(c_l2)
-        hits_ev_l3.append(c_l3)
-        hits_ev_l4.append(c_l4)
+        hits_ev_l1.append(c_l1); hits_ev_l2.append(c_l2)
+        hits_ev_l3.append(c_l3); hits_ev_l4.append(c_l4)
 
     print(f"\n✅ Finished. Total events: {cnt}. Active bundles: {len(bundle_counts)}")
     print(f"   Hits passing cuts: {len(dist_toa_all)}")
-    
+
     hit_counts_data = {
         'total': hits_ev_total,
-        'c1': hits_ev_c1,
-        'c2': hits_ev_c2,
-        'l1': hits_ev_l1,
-        'l2': hits_ev_l2,
-        'l3': hits_ev_l3,
-        'l4': hits_ev_l4
+        'c1': hits_ev_c1, 'c2': hits_ev_c2,
+        'l1': hits_ev_l1, 'l2': hits_ev_l2, 'l3': hits_ev_l3, 'l4': hits_ev_l4
     }
 
-    return bundle_counts, dist_toa_all, dist_tot_all, dist_delta_toa, dist_delta_tot, hit_counts_data
+    return bundle_counts, dist_toa_all, dist_tot_all, dist_delta_toa, dist_delta_tot, hit_counts_data, dist_toa_by_board, dist_tot_by_board
 
 def analyze_toa_tot(filename):
     """MODE 4: ToA vs ToT 2D Histogram."""
@@ -306,7 +326,7 @@ def analyze_toa_tot(filename):
         events_to_scan = int(input("\n>>> How many events to scan? "))
     except ValueError:
         print("Invalid input."); return
-
+    
     print(f"\nScanning {events_to_scan} events in {filename}...")
     try: mfile = midas.file_reader.MidasFile(filename)
     except Exception as e: print(f"Error: {e}"); return
@@ -332,6 +352,13 @@ def analyze_toa_tot(filename):
             
             if dtq == DTQ_TIMING:
                 timing_ev = Timing(raw)
+                try: match = re.search(r'\d+', bank_name); bid = int(match.group()) if match else 0
+                except: bid=0
+                
+                # --- FILTER: EXCLUDE BOARD >= 4 ---
+                if bid >= 4: continue
+                # ----------------------------------
+
                 ref = getattr(timing_ev, 'fine_tstamp', 0)
                 if ref < time0: 
                     time0 = ref
@@ -366,13 +393,14 @@ def analyze_toa_tot(filename):
 # ==========================================
 # 1D. MANUAL DEBUG FUNCTION
 # ==========================================
+
 def debug_manual_mapping():
     def reverse_lookup_bundle(target_bundle):
         for b in range(4):
             for c in range(64):
                 if get_bundle_id(b, c) == target_bundle: return b, c
         return None, None
-
+    
     print("\n================ MANUAL FIBER DEBUGGING (MULTI) ================")
     while True:
         print("\n1. Enter list of 'Board,Channel' -> Get Bundle IDs")
@@ -422,7 +450,7 @@ def get_bundle_id(board_id, channel_id):
     m2={31:0,27:1,23:2,19:3,15:4,11:5,7:6,3:7,29:8,25:9,21:10,17:11,13:12,9:13,5:14,1:15,0:16,4:17,8:18,12:19,16:20,20:21,24:22,28:23,2:24,6:25,10:26,14:27,18:28,22:29,26:30,30:31,63:32,59:33,55:34,51:35,47:36,43:37,39:38,35:39,61:40,57:41,53:42,49:43,45:44,41:45,37:46,33:47,32:48,36:49,40:50,44:51,48:52,52:53,56:54,60:55,34:56,38:57,42:58,46:59,50:60,54:61,58:62,62:63}
     m3={31:64,27:65,23:66,19:67,15:68,11:69,7:70,3:71,29:72,25:73,21:74,17:75,13:76,9:77,5:78,1:79,0:80,4:81,8:82,12:83,16:84,20:85,24:86,28:87,2:88,6:89,10:90,14:91,18:92,22:93,26:94,30:95,63:96,59:97,55:98,51:99,47:100,43:101,39:102,35:103,61:104,57:105,53:106,49:107,45:108,41:109,37:110,33:111,32:112,36:113,40:114,44:115,48:116,52:117,56:118}
     maps = [m0, m1, m2, m3]
-
+    
     if board_id < 0 or board_id >= len(maps): return None
     val = maps[board_id].get(channel_id, None)
     if val is None: return None
@@ -438,7 +466,7 @@ def plot_run_distributions(toa_list, tot_list, delta_toa_list, delta_tot_list, c
     if not toa_list:
         print("⚠️ No data to plot for distributions.")
         return
-
+    
     # Helper per calcolare i bin dinamici
     def get_dynamic_bins(data_list):
         if not data_list: return 100
@@ -474,7 +502,7 @@ def plot_run_distributions(toa_list, tot_list, delta_toa_list, delta_tot_list, c
     ax[0, 1].set_yscale('log')
 
     # --- ROW 2: Event Delta Distributions (Max - Min) ---
-
+    
     # Plot Delta ToA
     b_dtoa = get_dynamic_bins(delta_toa_list)
     ax[1, 0].hist(delta_toa_list, bins=b_dtoa, color='darkgreen', alpha=0.7, edgecolor='k', linewidth=0.5)
@@ -497,6 +525,85 @@ def plot_run_distributions(toa_list, tot_list, delta_toa_list, delta_tot_list, c
     print("\n>>> Displaying Global Distributions...")
     plt.show()
 
+def plot_distributions_by_board(toa_by_board, tot_by_board):
+    """
+    Plots ToA and ToT histograms separated by Board ID.
+    Ignores boards excluded by reading function (>=4).
+    USES SAME BINNING FOR ALL BOARDS.
+    """
+    boards = sorted(toa_by_board.keys())
+    if not boards:
+        print("⚠️ No board data found to plot.")
+        return
+
+    # --- 1. Calcolo Binning Globale per ToA ---
+    # Raccogliamo tutti i ToA di tutte le board per trovare min e max globali
+    all_toas = []
+    for b in boards:
+        all_toas.extend(toa_by_board[b])
+    
+    if all_toas:
+        g_min_toa, g_max_toa = min(all_toas), max(all_toas)
+        rng_toa = g_max_toa - g_min_toa
+        # Logica: circa 2 bin per ns, ma limitato tra 50 e 200 bin totali
+        nbins_toa = int(rng_toa * 2)
+        nbins_toa = max(50, min(nbins_toa, 200))
+        # Creiamo i bordi esatti dei bin
+        bins_toa_edges = np.linspace(g_min_toa, g_max_toa, nbins_toa)
+    else:
+        bins_toa_edges = 50 # Fallback
+
+    # --- 2. Calcolo Binning Globale per ToT ---
+    all_tots = []
+    for b in boards:
+        all_tots.extend(tot_by_board[b])
+        
+    if all_tots:
+        g_min_tot, g_max_tot = min(all_tots), max(all_tots)
+        rng_tot = g_max_tot - g_min_tot
+        nbins_tot = int(rng_tot)
+        nbins_tot = max(50, min(nbins_tot, 200))
+        bins_tot_edges = np.linspace(g_min_tot, g_max_tot, nbins_tot)
+    else:
+        bins_tot_edges = 50
+
+    n_boards = len(boards)
+    # sharex='col' allinea gli assi X verticalmente per confronto diretto
+    fig, axs = plt.subplots(n_boards, 2, figsize=(12, 3.5 * n_boards), squeeze=False, sharex='col')
+    
+    fig.suptitle(f"Distributions by Board (Filtered: Excluded Boards >= 4)", fontsize=16)
+
+    for i, bid in enumerate(boards):
+        # Dati
+        toas = toa_by_board[bid]
+        tots = tot_by_board[bid]
+        
+        # --- Colonna 0: ToA ---
+        ax_toa = axs[i, 0]
+        if toas:
+            # Usiamo bins=bins_toa_edges invece di un intero
+            ax_toa.hist(toas, bins=bins_toa_edges, color='teal', alpha=0.7, edgecolor='k', linewidth=0.5)
+            ax_toa.set_yscale('log')
+        
+        ax_toa.set_title(f"Board {bid} - ToA Corrected ({len(toas)} hits)")
+        ax_toa.set_ylabel("Counts")
+        ax_toa.grid(True, alpha=0.3)
+        if i == n_boards - 1: ax_toa.set_xlabel("Time [ns]")
+
+        # --- Colonna 1: ToT ---
+        ax_tot = axs[i, 1]
+        if tots:
+            # Usiamo bins=bins_tot_edges
+            ax_tot.hist(tots, bins=bins_tot_edges, color='orange', alpha=0.7, edgecolor='k', linewidth=0.5)
+            ax_tot.set_yscale('log')
+            
+        ax_tot.set_title(f"Board {bid} - ToT")
+        ax_tot.grid(True, alpha=0.3)
+        if i == n_boards - 1: ax_tot.set_xlabel("ToT [raw]")
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.97]) 
+    print("\n>>> Displaying Per-Board Distributions (Uniform Bins)...")
+    plt.show()
 def plot_hit_multiplicity(counts_data):
     """
     Plots the multiplicity of hits per event:
@@ -507,7 +614,7 @@ def plot_hit_multiplicity(counts_data):
     if not counts_data['total']:
         print("⚠️ No multiplicity data to plot.")
         return
-        
+    
     fig = plt.figure(figsize=(15, 9))
     gs = GridSpec(2, 2)
     
@@ -534,24 +641,24 @@ def plot_hit_multiplicity(counts_data):
     ax2.set_yscale('log')
     ax2.legend()
     ax2.grid(True, which="both", ls="-", alpha=0.2)
-
+    
     # 3. Layers Comparison
     ax3 = fig.add_subplot(gs[1, 1])
     max_l = max([max(counts_data[k]) for k in ['l1','l2','l3','l4']])
     bins_l = range(0, max_l + 2)
-    
+
     ax3.hist(counts_data['l1'], bins=bins_l, histtype='step', lw=2, color='red', label='L1 (C1 In)')
     ax3.hist(counts_data['l2'], bins=bins_l, histtype='step', lw=2, color='salmon', label='L2 (C1 Out)')
     ax3.hist(counts_data['l3'], bins=bins_l, histtype='step', lw=2, color='blue', label='L3 (C2 In)')
     ax3.hist(counts_data['l4'], bins=bins_l, histtype='step', lw=2, color='cyan', label='L4 (C2 Out)')
-    
+
     ax3.set_title("Hits per Layer")
     ax3.set_xlabel("Number of Hits")
     ax3.set_ylabel("Count")
     ax3.set_yscale('log')
     ax3.legend()
     ax3.grid(True, which="both", ls="-", alpha=0.2)
-
+    
     plt.tight_layout()
     print("\n>>> Displaying Hit Multiplicity plots...")
     plt.show()
@@ -564,7 +671,7 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
     ax2.grid(True, alpha=0.3)
     R_C1, R_C2 = 1.7, 2.1
     ranges = [0, N1, N1+N2, N1+N2+N3, N1+N2+N3+N4]
-
+    
     def get_geom(b):
         if b < ranges[1]: 
             return R_C1, 2*np.pi*(-b)/N1 + PHI_OFFSET_C1IN, -1, "red", 1
@@ -634,7 +741,7 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
 def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
     fig = plt.figure(figsize=(18, 9))
     gs = GridSpec(4, 2, width_ratios=[1, 1.2])
-
+    
     ax_h1 = fig.add_subplot(gs[0, 0])
     ax_h2 = fig.add_subplot(gs[1, 0], sharey=ax_h1)
     ax_h3 = fig.add_subplot(gs[2, 0], sharey=ax_h1)
@@ -704,7 +811,7 @@ def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
             else:
                 color = 'whitesmoke'; alpha, ec, sz, zo = 0.8, 'silver', 60, 5
             ax2d.scatter(x0, y0, s=sz, color=color, edgecolors=ec, alpha=alpha, zorder=zo)
-
+    
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm); sm.set_array([])
     cb = plt.colorbar(sm, ax=ax2d, fraction=0.046, pad=0.04)
     cb.set_label('Hits')
@@ -725,7 +832,7 @@ def plot_event_toa_histogram(hits, ev_idx):
     if not toas:
         print("No ToA data to plot.")
         return
-
+    
     plt.figure(figsize=(8, 5))
     plt.hist(toas, bins=50, color='skyblue', edgecolor='black', alpha=0.7)
     plt.title(f"Event #{ev_idx}: ToA Distribution")
@@ -750,12 +857,12 @@ def run_sequential_mode(filename):
         tot_max_g = int(tot_max_in) if tot_max_in else 1000000000
     except ValueError:
         print("Invalid input."); return
-
+    
     print(f"\n--- Starting Sequential Mode from event #{start_idx} ---")
     gen = yield_physics_events(filename, start_index=start_idx, 
                                toa_limits=(toa_min_g, toa_max_g), 
                                tot_limits=(tot_min_g, tot_max_g))
-
+    
     for ev_idx, hits_data in gen:
         print(f"\n========================================")
         print(f"--> Physics Event #{ev_idx} (Total Hits in range: {len(hits_data)})")
@@ -778,7 +885,8 @@ def run_sequential_mode(filename):
         print("\n--- Visualizing Hits ---")
         bids = []
         for i, h in enumerate(sel_hits):
-            if (h['board'] != 4):
+            # Check just to be safe, though filtered in generator
+            if (h['board'] < 4):
                 print(f"{i+1}) Board: {h['board']:<2} | Ch: {h['ch']:<2} | ToA: {h['toa']} | ToT: {h['tot']} | T ref: {h['time ref']} | ToA corrected: {h['toa_correct']} | ({h['bank']})")
             bi = get_bundle_id(h['board'], h['ch'])
             if bi is not None: bids.append(bi)
@@ -805,7 +913,7 @@ if __name__ == "__main__":
         if not FILENAME:
             print("No file provided. Exiting.")
             sys.exit(0)
-
+    
     if not os.path.exists(FILENAME):
         print(f"ERROR: File '{FILENAME}' not found.")
         sys.exit(1)
@@ -845,21 +953,24 @@ if __name__ == "__main__":
             tot_max_in = input(f"Max ToT [No Limit]: ")
             tot_max = int(tot_max_in) if tot_max_in else 1000000000
             
-            # Recupera conteggi e liste distribuzioni
-            counts, list_toa, list_tot, list_delta_toa, list_delta_tot, list_hits_data = read_cumulative_hits(
+            # Recupera conteggi, liste distribuzioni e DIZIONARI PER BOARD
+            counts, list_toa, list_tot, list_delta_toa, list_delta_tot, list_hits_data, dict_toa_board, dict_tot_board = read_cumulative_hits(
                 FILENAME, 
                 toa_limits=(toa_min, toa_max), 
                 tot_limits=(tot_min, tot_max)
             )
             
-            # Plot Heatmap
+            # 1. Plot Heatmap
             mapper_plot_heatmap(counts)
             
-            # Plot Distributions
+            # 2. Plot Distribuzioni Globali
             cuts_str = {'toa': f"{toa_min}-{toa_max}", 'tot': f"{tot_min}-{tot_max}"}
             plot_run_distributions(list_toa, list_tot, list_delta_toa, list_delta_tot, cuts_str)
             
-            # Plot Hit Multiplicity
+            # 3. Plot Distribuzioni PER BOARD
+            plot_distributions_by_board(dict_toa_board, dict_tot_board)
+
+            # 4. Plot Hit Multiplicity
             plot_hit_multiplicity(list_hits_data)
 
         except ValueError:
