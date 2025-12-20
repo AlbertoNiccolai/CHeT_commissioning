@@ -864,6 +864,7 @@ def run_sequential_mode(filename):
                                tot_limits=(tot_min_g, tot_max_g))
     
     for ev_idx, hits_data in gen:
+        if len(hits_data) == 0: continue
         print(f"\n========================================")
         print(f"--> Physics Event #{ev_idx} (Total Hits in range: {len(hits_data)})")
         print("========================================")
