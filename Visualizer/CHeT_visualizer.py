@@ -33,11 +33,11 @@ L_FIBER = 15.0
 # Geometrical Offsets
 OFFSET_EXP = 40 * np.pi/180
 DELTA1 = 1.26732381973286972
-DELTA2 = 1.42022338200000001
+DELTA2 = 1.42022338200000001 + 18*np.pi/180
 PHI_OFFSET_C1IN  = 4.293507822806237 + DELTA1 + OFFSET_EXP
 PHI_OFFSET_C1OUT = 3.829038665089601 + DELTA1 + OFFSET_EXP
-PHI_OFFSET_C2IN  = 2.609122003 + DELTA2 + OFFSET_EXP
-PHI_OFFSET_C2OUT = 3.351032122 + DELTA2 + OFFSET_EXP
+PHI_OFFSET_C2IN  = 2.609122003729387 + DELTA2 + OFFSET_EXP
+PHI_OFFSET_C2OUT = 3.351032122759248 + DELTA2 + OFFSET_EXP
 
 TOA_MAX_GLOBAL = 500  # Hard cutoff for Time of Arrival (Noise filter)
 
@@ -179,21 +179,16 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
     """
     MODE 2: Cumulative reading.
     Returns:
-    1. Bundle Counts (dict)
-    2. Global ToA list
-    3. Global ToT list
-    4. Delta ToA per event list
-    5. Delta ToT per event list
-    6. Hit Multiplicity Data (dict with lists of counts per event)
-    7. ToA by Board (dict)
-    8. ToT by Board (dict)
+    bundle_counts, dist_toa_all, dist_tot_all, dist_delta_toa, dist_delta_tot, 
+    hit_counts_data, dist_toa_by_board, dist_tot_by_board, dist_crossing_z,
+    ev_sum_tot, ev_avg_tot, ev_first_toa, ev_avg_toa
     """
     print(f"\n--- STARTING CUMULATIVE ANALYSIS ON {filename} ---")
     print(f"Applying Cuts -> ToA Corrected: {toa_limits}, ToT: {tot_limits}")
     print("⚠️  FILTER ACTIVE: Skipping Boards >= 4")
     
     try: mfile = midas.file_reader.MidasFile(filename)
-    except Exception as e: print(f"Error: {e}"); return {}, [], [], [], [], {}, {}, {}
+    except Exception as e: print(f"Error: {e}"); return {}, [], [], [], [], {}, {}, {}, [], [], [], [], []
 
     bundle_counts = {}
 
@@ -215,6 +210,15 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
     hits_ev_l2 = []
     hits_ev_l3 = []
     hits_ev_l4 = []
+
+    # LISTA PER GLI INCROCI Z
+    dist_crossing_z = []
+
+    # LISTE PER STATISTICHE 2D (Hit vs ToT/ToA)
+    ev_sum_tot = []
+    ev_avg_tot = []
+    ev_first_toa = []
+    ev_avg_toa = []
 
     # Indici per i layer
     idx_l2 = N1
@@ -238,6 +242,10 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
         c_tot = 0
         c_c1, c_c2 = 0, 0
         c_l1, c_l2, c_l3, c_l4 = 0, 0, 0, 0
+
+        # Liste temporanee PHI per calcolare incroci dell'evento corrente
+        phi_c1_cw, phi_c1_ccw = [], []
+        phi_c2_cw, phi_c2_ccw = [], []
 
         for bank_name, bank in event.banks.items():
             raw = bytes(bank.data)
@@ -286,28 +294,56 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
                             bundle_counts[b_id] = bundle_counts.get(b_id, 0) + 1
                             c_tot += 1
                             
-                            # Logica Layers/Cilindri
+                            # Logica Layers/Cilindri e PHI per incroci
                             if b_id < idx_l2:      # Layer 1 (C1 In)
                                 c_l1 += 1; c_c1 += 1
+                                phi_c1_cw.append(2*np.pi*(-b_id)/N1 + PHI_OFFSET_C1IN)
                             elif b_id < idx_l3:    # Layer 2 (C1 Out)
                                 c_l2 += 1; c_c1 += 1
+                                b_loc = b_id - idx_l2
+                                phi_c1_ccw.append(2*np.pi*(+b_loc)/N2 + PHI_OFFSET_C1OUT)
                             elif b_id < idx_l4:    # Layer 3 (C2 In)
                                 c_l3 += 1; c_c2 += 1
+                                b_loc = b_id - idx_l3
+                                phi_c2_cw.append(2*np.pi*(-b_loc)/N3 + PHI_OFFSET_C2IN)
                             elif b_id < idx_end:   # Layer 4 (C2 Out)
                                 c_l4 += 1; c_c2 += 1
+                                b_loc = b_id - idx_l4
+                                phi_c2_ccw.append(2*np.pi*(+b_loc)/N4 + PHI_OFFSET_C2OUT)
 
-        # Fine evento: Calcolo delta e salvataggio conteggi
+        # Calcolo incroci Z per l'evento corrente
+        for p1 in phi_c1_cw:
+            for p2 in phi_c1_ccw:
+                delta = p1 - p2
+                for k in range(-2, 3):
+                    th = delta/2.0 - k*np.pi
+                    if -0.001 <= th <= np.pi + 0.001:
+                        dist_crossing_z.append((2*L_FIBER*th/np.pi) - L_FIBER)
+        for p1 in phi_c2_cw:
+            for p2 in phi_c2_ccw:
+                delta = p1 - p2
+                for k in range(-2, 3):
+                    th = delta/2.0 - k*np.pi
+                    if -0.001 <= th <= np.pi + 0.001:
+                        dist_crossing_z.append((2*L_FIBER*th/np.pi) - L_FIBER)
+
+        # Fine evento: Calcolo delta e statistiche 2D
         if event_valid_toas:
             dist_delta_toa.append(max(event_valid_toas) - min(event_valid_toas))
+            ev_sum_tot.append(sum(event_valid_tots))
+            ev_avg_tot.append(np.mean(event_valid_tots))
+            ev_first_toa.append(min(event_valid_toas))
+            ev_avg_toa.append(np.mean(event_valid_toas))
+        else:
+            ev_sum_tot.append(0); ev_avg_tot.append(0); ev_first_toa.append(0); ev_avg_toa.append(0)
+
         if event_valid_tots:
             dist_delta_tot.append(max(event_valid_tots) - min(event_valid_tots))
         
-        # Salviamo i contatori anche se sono 0 (per statistica)
+        # Salvataggio contatori
         hits_ev_total.append(c_tot)
-        hits_ev_c1.append(c_c1)
-        hits_ev_c2.append(c_c2)
-        hits_ev_l1.append(c_l1); hits_ev_l2.append(c_l2)
-        hits_ev_l3.append(c_l3); hits_ev_l4.append(c_l4)
+        hits_ev_c1.append(c_c1); hits_ev_c2.append(c_c2)
+        hits_ev_l1.append(c_l1); hits_ev_l2.append(c_l2); hits_ev_l3.append(c_l3); hits_ev_l4.append(c_l4)
 
     print(f"\n✅ Finished. Total events: {cnt}. Active bundles: {len(bundle_counts)}")
     print(f"   Hits passing cuts: {len(dist_toa_all)}")
@@ -318,7 +354,7 @@ def read_cumulative_hits(filename, toa_limits=(0, TOA_MAX_GLOBAL), tot_limits=(0
         'l1': hits_ev_l1, 'l2': hits_ev_l2, 'l3': hits_ev_l3, 'l4': hits_ev_l4
     }
 
-    return bundle_counts, dist_toa_all, dist_tot_all, dist_delta_toa, dist_delta_tot, hit_counts_data, dist_toa_by_board, dist_tot_by_board
+    return bundle_counts, dist_toa_all, dist_tot_all, dist_delta_toa, dist_delta_tot, hit_counts_data, dist_toa_by_board, dist_tot_by_board, dist_crossing_z, ev_sum_tot, ev_avg_tot, ev_first_toa, ev_avg_toa
 
 def analyze_toa_tot(filename):
     """MODE 4: ToA vs ToT 2D Histogram."""
@@ -461,6 +497,103 @@ def get_bundle_id(board_id, channel_id):
 # 3. PLOTTING
 # ==========================================
 
+def add_stat_box(ax, data_x, data_y=None, label=None, color='black', y_offset=0, exclude_zeros=False):
+    """
+    ROOT-style stat box. 
+    Se data_y è fornito, calcola le statistiche per entrambi (es. per 2D).
+    Se exclude_zeros è True, ignora i valori pari a 0 (per escludere il primo bin vuoto).
+    """
+    x = np.array(data_x)
+    
+    if data_y is not None:
+        y = np.array(data_y)
+        # Per i 2D, filtriamo sempre gli eventi dove multiplicity (X) è 0
+        mask = x > 0
+        x_filtered = x[mask]
+        y_filtered = y[mask]
+    else:
+        # Per i 1D, filtriamo se richiesto o se il nome del grafico suggerisce multiplicity
+        if exclude_zeros:
+            x_filtered = x[x > 0]
+        else:
+            x_filtered = x
+        y_filtered = None
+
+    entries = len(x_filtered)
+    if entries == 0: return
+
+    stats_str = ""
+    if label: stats_str += f"[{label}]\n"
+    stats_str += f"Entries: {entries}\n"
+    stats_str += f"Mean X: {np.mean(x_filtered):.2f}\n"
+    stats_str += f"RMS X: {np.std(x_filtered):.2f}"
+    
+    if y_filtered is not None:
+        stats_str += f"\nMean Y: {np.mean(y_filtered):.2f}"
+        stats_str += f"\nRMS Y: {np.std(y_filtered):.2f}"
+        
+    ax.text(0.98, 0.95 - y_offset, stats_str, transform=ax.transAxes, 
+            verticalalignment='top', horizontalalignment='right',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.7, edgecolor=color), 
+            fontsize=8, color=color)
+
+def plot_crossing_z_distribution(z_list):
+    """Plots the Z coordinate distribution of helix crossings."""
+    if not z_list:
+        print("⚠️ No crossing data to plot.")
+        return
+    plt.figure(figsize=(10, 6))
+    plt.hist(z_list, bins=100, range=(-L_FIBER, L_FIBER), color='gold', edgecolor='black', alpha=0.8)
+    plt.title("Z-Coordinate Distribution of Helix Crossings (Cumulative Analysis)")
+    plt.xlabel("Z-Coordinate [cm]"); plt.ylabel("Counts")
+    plt.grid(True, alpha=0.3)
+    plt.xlim(-L_FIBER - 2, L_FIBER + 2)
+    ax = plt.gca()
+    add_stat_box(ax, z_list)
+    plt.tight_layout()
+    print("\n>>> Displaying Crossing Z Distribution...")
+    plt.show()
+
+def plot_2d_hits_vs_tot_stats(hits_total, sum_tot, avg_tot):
+    """First New Window: Hits per event vs Sum and Mean ToT."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    h1 = ax1.hist2d(hits_total, sum_tot, bins=[range(max(hits_total)+2), 100], cmap='viridis', norm=LogNorm())
+    ax1.set_title("Multiplicity vs Sum of ToT")
+    ax1.set_xlabel("Number of hits per event"); ax1.set_ylabel("Sum of ToT per event [raw]")
+    plt.colorbar(h1[3], ax=ax1, label='Counts')
+    add_stat_box(ax1, hits_total, sum_tot)
+
+    h2 = ax2.hist2d(hits_total, avg_tot, bins=[range(max(hits_total)+2), 100], cmap='plasma', norm=LogNorm())
+    ax2.set_title("Multiplicity vs Mean ToT")
+    ax2.set_xlabel("Number of hits per event"); ax2.set_ylabel("Mean ToT per event [raw]")
+    plt.colorbar(h2[3], ax=ax2, label='Counts')
+    add_stat_box(ax2, hits_total, avg_tot)
+
+    plt.tight_layout()
+    print("\n>>> Displaying 2D Hits vs ToT (Sum/Mean)...")
+    plt.show()
+
+def plot_2d_hits_vs_toa_stats(hits_total, first_toa, avg_toa):
+    """Second New Window: Hits per event vs First and Mean Corrected ToA."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    h1 = ax1.hist2d(hits_total, first_toa, bins=[range(max(hits_total)+2), 100], cmap='magma', norm=LogNorm())
+    ax1.set_title("Multiplicity vs First Hit Time")
+    ax1.set_xlabel("Number of hits per event"); ax1.set_ylabel("First Corrected ToA [ns]")
+    plt.colorbar(h1[3], ax=ax1, label='Counts')
+    add_stat_box(ax1, hits_total, first_toa)
+
+    h2 = ax2.hist2d(hits_total, avg_toa, bins=[range(max(hits_total)+2), 100], cmap='inferno', norm=LogNorm())
+    ax2.set_title("Multiplicity vs Mean Hit Time")
+    ax2.set_xlabel("Number of hits per event"); ax2.set_ylabel("Mean Corrected ToA [ns]")
+    plt.colorbar(h2[3], ax=ax2, label='Counts')
+    add_stat_box(ax2, hits_total, avg_toa)
+
+    plt.tight_layout()
+    print("\n>>> Displaying 2D Hits vs ToA (First/Mean)...")
+    plt.show()
+
 def plot_run_distributions(toa_list, tot_list, delta_toa_list, delta_tot_list, cuts_info):
     """Plot global histograms: Single hits (Row 1) and Event Deltas (Row 2)."""
     if not toa_list:
@@ -481,45 +614,41 @@ def plot_run_distributions(toa_list, tot_list, delta_toa_list, delta_tot_list, c
     # Crea griglia 2x2
     fig, ax = plt.subplots(2, 2, figsize=(14, 10))
 
-    # --- ROW 1: Single Hit Distributions ---
-    
     # Plot ToA Corrected
     b_toa = get_dynamic_bins(toa_list)
     ax[0, 0].hist(toa_list, bins=b_toa, color='teal', alpha=0.7, edgecolor='k', linewidth=0.5)
     ax[0, 0].set_title(f"Global Corrected ToA (Single Hits)\n(Cut: {cuts_info['toa']}) - Bins: {b_toa}")
-    ax[0, 0].set_xlabel("ToA Corrected (Ref + ToA/2 - T0) [ns]")
-    ax[0, 0].set_ylabel("Counts")
+    ax[0, 0].set_xlabel("Corrected Time of Arrival [ns]"); ax[0, 0].set_ylabel("Counts")
     ax[0, 0].grid(True, alpha=0.3)
     ax[0, 0].set_yscale('log')
+    add_stat_box(ax[0, 0], toa_list)
 
     # Plot ToT
     b_tot = get_dynamic_bins(tot_list)
     ax[0, 1].hist(tot_list, bins=b_tot, color='orange', alpha=0.7, edgecolor='k', linewidth=0.5)
     ax[0, 1].set_title(f"Global ToT (Single Hits)\n(Cut: {cuts_info['tot']}) - Bins: {b_tot}")
-    ax[0, 1].set_xlabel("Time over Threshold (ToT) [raw]")
-    ax[0, 1].set_ylabel("Counts")
+    ax[0, 1].set_xlabel("Time over Threshold [raw]"); ax[0, 1].set_ylabel("Counts")
     ax[0, 1].grid(True, alpha=0.3)
     ax[0, 1].set_yscale('log')
+    add_stat_box(ax[0, 1], tot_list)
 
-    # --- ROW 2: Event Delta Distributions (Max - Min) ---
-    
     # Plot Delta ToA
     b_dtoa = get_dynamic_bins(delta_toa_list)
     ax[1, 0].hist(delta_toa_list, bins=b_dtoa, color='darkgreen', alpha=0.7, edgecolor='k', linewidth=0.5)
-    ax[1, 0].set_title(f"Event ToA Range (Max - Min)\nEvents with >0 hits - Bins: {b_dtoa}")
-    ax[1, 0].set_xlabel("Delta ToA [ns]")
-    ax[1, 0].set_ylabel("Events")
+    ax[1, 0].set_title(f"Event ToA Range (Max - Min)")
+    ax[1, 0].set_xlabel("Delta ToA per Event [ns]"); ax[1, 0].set_ylabel("Counts")
     ax[1, 0].grid(True, alpha=0.3)
     ax[1, 0].set_yscale('log')
+    add_stat_box(ax[1, 0], delta_toa_list)
 
     # Plot Delta ToT
     b_dtot = get_dynamic_bins(delta_tot_list)
     ax[1, 1].hist(delta_tot_list, bins=b_dtot, color='darkred', alpha=0.7, edgecolor='k', linewidth=0.5)
-    ax[1, 1].set_title(f"Event ToT Range (Max - Min)\nEvents with >0 hits - Bins: {b_dtot}")
-    ax[1, 1].set_xlabel("Delta ToT [raw]")
-    ax[1, 1].set_ylabel("Events")
+    ax[1, 1].set_title(f"Event ToT Range (Max - Min)")
+    ax[1, 1].set_xlabel("Delta ToT per Event [raw]"); ax[1, 1].set_ylabel("Counts")
     ax[1, 1].grid(True, alpha=0.3)
     ax[1, 1].set_yscale('log')
+    add_stat_box(ax[1, 1], delta_tot_list)
 
     plt.tight_layout()
     print("\n>>> Displaying Global Distributions...")
@@ -537,7 +666,6 @@ def plot_distributions_by_board(toa_by_board, tot_by_board):
         return
 
     # --- 1. Calcolo Binning Globale per ToA ---
-    # Raccogliamo tutti i ToA di tutte le board per trovare min e max globali
     all_toas = []
     for b in boards:
         all_toas.extend(toa_by_board[b])
@@ -545,13 +673,11 @@ def plot_distributions_by_board(toa_by_board, tot_by_board):
     if all_toas:
         g_min_toa, g_max_toa = min(all_toas), max(all_toas)
         rng_toa = g_max_toa - g_min_toa
-        # Logica: circa 2 bin per ns, ma limitato tra 50 e 200 bin totali
         nbins_toa = int(rng_toa * 2)
         nbins_toa = max(50, min(nbins_toa, 200))
-        # Creiamo i bordi esatti dei bin
         bins_toa_edges = np.linspace(g_min_toa, g_max_toa, nbins_toa)
     else:
-        bins_toa_edges = 50 # Fallback
+        bins_toa_edges = 50 
 
     # --- 2. Calcolo Binning Globale per ToT ---
     all_tots = []
@@ -568,49 +694,35 @@ def plot_distributions_by_board(toa_by_board, tot_by_board):
         bins_tot_edges = 50
 
     n_boards = len(boards)
-    # sharex='col' allinea gli assi X verticalmente per confronto diretto
     fig, axs = plt.subplots(n_boards, 2, figsize=(12, 3.5 * n_boards), squeeze=False, sharex='col')
     
     fig.suptitle(f"Distributions by Board (Filtered: Excluded Boards >= 4)", fontsize=16)
 
     for i, bid in enumerate(boards):
-        # Dati
-        toas = toa_by_board[bid]
-        tots = tot_by_board[bid]
-        
-        # --- Colonna 0: ToA ---
         ax_toa = axs[i, 0]
-        if toas:
-            # Usiamo bins=bins_toa_edges invece di un intero
-            ax_toa.hist(toas, bins=bins_toa_edges, color='teal', alpha=0.7, edgecolor='k', linewidth=0.5)
+        if bid in toa_by_board:
+            ax_toa.hist(toa_by_board[bid], bins=bins_toa_edges, color='teal', alpha=0.7, edgecolor='k', linewidth=0.5)
             ax_toa.set_yscale('log')
-        
-        ax_toa.set_title(f"Board {bid} - ToA Corrected ({len(toas)} hits)")
+            add_stat_box(ax_toa, toa_by_board[bid])
+        ax_toa.set_title(f"Board {bid} - ToA Corrected")
         ax_toa.set_ylabel("Counts")
         ax_toa.grid(True, alpha=0.3)
-        if i == n_boards - 1: ax_toa.set_xlabel("Time [ns]")
+        if i == n_boards - 1: ax_toa.set_xlabel("Corrected ToA [ns]")
 
-        # --- Colonna 1: ToT ---
         ax_tot = axs[i, 1]
-        if tots:
-            # Usiamo bins=bins_tot_edges
-            ax_tot.hist(tots, bins=bins_tot_edges, color='orange', alpha=0.7, edgecolor='k', linewidth=0.5)
+        if bid in tot_by_board:
+            ax_tot.hist(tot_by_board[bid], bins=bins_tot_edges, color='orange', alpha=0.7, edgecolor='k', linewidth=0.5)
             ax_tot.set_yscale('log')
-            
+            add_stat_box(ax_tot, tot_by_board[bid])
         ax_tot.set_title(f"Board {bid} - ToT")
         ax_tot.grid(True, alpha=0.3)
         if i == n_boards - 1: ax_tot.set_xlabel("ToT [raw]")
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.97]) 
-    print("\n>>> Displaying Per-Board Distributions (Uniform Bins)...")
     plt.show()
+
 def plot_hit_multiplicity(counts_data):
-    """
-    Plots the multiplicity of hits per event:
-    1. Total hits per event
-    2. Comparison between Cylinder 1 and Cylinder 2
-    3. Comparison between the 4 Layers
-    """
+    """Plots the multiplicity of hits per event."""
     if not counts_data['total']:
         print("⚠️ No multiplicity data to plot.")
         return
@@ -619,59 +731,74 @@ def plot_hit_multiplicity(counts_data):
     gs = GridSpec(2, 2)
     
     # 1. Total Hits
-    ax1 = fig.add_subplot(gs[0, :]) # Full width top
+    ax1 = fig.add_subplot(gs[0, :])
     max_h = max(counts_data['total'])
     bins = range(0, max_h + 2)
     ax1.hist(counts_data['total'], bins=bins, color='black', alpha=0.6, edgecolor='k', label='Total')
-    ax1.set_title(f"Total Hits per Event (Max: {max_h})")
-    ax1.set_xlabel("Number of Hits")
-    ax1.set_ylabel("Count")
+    ax1.set_title(f"Total Hits per Event")
+    ax1.set_xlabel("Number of hits per event"); ax1.set_ylabel("Number of events")
     ax1.set_yscale('log')
     ax1.grid(True, which="both", ls="-", alpha=0.2)
+    # Ricalcolo Media e RMS escludendo i conteggi nulli (primo bin)
+    add_stat_box(ax1, counts_data['total'], exclude_zeros=True)
     
     # 2. Cylinders Comparison
     ax2 = fig.add_subplot(gs[1, 0])
     max_c = max(max(counts_data['c1']), max(counts_data['c2']))
     bins_c = range(0, max_c + 2)
-    ax2.hist(counts_data['c1'], bins=bins_c, color='red', alpha=0.5, label='Cyl 1', histtype='stepfilled', edgecolor='red')
-    ax2.hist(counts_data['c2'], bins=bins_c, color='blue', alpha=0.5, label='Cyl 2', histtype='stepfilled', edgecolor='blue')
+    ax2.hist(counts_data['c1'], bins=bins_c, color='red', alpha=0.4, label='Cyl 1', histtype='stepfilled', edgecolor='red')
+    ax2.hist(counts_data['c2'], bins=bins_c, color='blue', alpha=0.4, label='Cyl 2', histtype='stepfilled', edgecolor='blue')
     ax2.set_title("Hits per Cylinder")
-    ax2.set_xlabel("Number of Hits")
-    ax2.set_ylabel("Count")
+    ax2.set_xlabel("Number of hits per event"); ax2.set_ylabel("Number of events")
     ax2.set_yscale('log')
     ax2.legend()
     ax2.grid(True, which="both", ls="-", alpha=0.2)
+    # Ricalcolo Media e RMS escludendo i conteggi nulli
+    add_stat_box(ax2, counts_data['c1'], label="Cyl 1", color='red', y_offset=0, exclude_zeros=True)
+    add_stat_box(ax2, counts_data['c2'], label="Cyl 2", color='blue', y_offset=0.25, exclude_zeros=True)
     
     # 3. Layers Comparison
     ax3 = fig.add_subplot(gs[1, 1])
-    max_l = max([max(counts_data[k]) for k in ['l1','l2','l3','l4']])
-    bins_l = range(0, max_l + 2)
-
-    ax3.hist(counts_data['l1'], bins=bins_l, histtype='step', lw=2, color='red', label='L1 (C1 In)')
-    ax3.hist(counts_data['l2'], bins=bins_l, histtype='step', lw=2, color='salmon', label='L2 (C1 Out)')
-    ax3.hist(counts_data['l3'], bins=bins_l, histtype='step', lw=2, color='blue', label='L3 (C2 In)')
-    ax3.hist(counts_data['l4'], bins=bins_l, histtype='step', lw=2, color='cyan', label='L4 (C2 Out)')
-
+    if counts_data['l1'] or counts_data['l2'] or counts_data['l3'] or counts_data['l4']:
+        max_l = max([max(counts_data[k]) if counts_data[k] else 0 for k in ['l1','l2','l3','l4']])
+        bins_l = range(0, max_l + 2)
+        ax3.hist(counts_data['l1'], bins=bins_l, histtype='step', lw=2, color='red', label='L1')
+        ax3.hist(counts_data['l2'], bins=bins_l, histtype='step', lw=2, color='salmon', label='L2')
+        ax3.hist(counts_data['l3'], bins=bins_l, histtype='step', lw=2, color='blue', label='L3')
+        ax3.hist(counts_data['l4'], bins=bins_l, histtype='step', lw=2, color='cyan', label='L4')
     ax3.set_title("Hits per Layer")
-    ax3.set_xlabel("Number of Hits")
-    ax3.set_ylabel("Count")
-    ax3.set_yscale('log')
-    ax3.legend()
-    ax3.grid(True, which="both", ls="-", alpha=0.2)
+    ax3.set_xlabel("Number of hits per event"); ax3.set_ylabel("Number of events")
+    ax3.set_yscale('log'); ax3.legend(); ax3.grid(True, which="both", ls="-", alpha=0.2)
+    # Ricalcolo Media e RMS escludendo i conteggi nulli
+    add_stat_box(ax3, counts_data['l1'], label="L1", color='red', y_offset=0, exclude_zeros=True)
+    add_stat_box(ax3, counts_data['l2'], label="L2", color='salmon', y_offset=0.22, exclude_zeros=True)
+    add_stat_box(ax3, counts_data['l3'], label="L3", color='blue', y_offset=0.44, exclude_zeros=True)
+    add_stat_box(ax3, counts_data['l4'], label="L4", color='cyan', y_offset=0.66, exclude_zeros=True)
     
     plt.tight_layout()
-    print("\n>>> Displaying Hit Multiplicity plots...")
     plt.show()
 
 def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER, event_idx=-1):
-    fig = plt.figure(figsize=(18, 8))
-    ax = fig.add_subplot(121, projection='3d')
-    ax2 = fig.add_subplot(122)
+    # Creazione figura con layout personalizzato
+    fig = plt.figure(figsize=(20, 10), layout = 'constrained')
+    # width_ratios dà un po' più di spazio al plot 3D se necessario
+    gs = fig.add_gridspec(2, 2, height_ratios=[0.7, 0.3], width_ratios=[1.2, 1], hspace=0.05, wspace=0.05)
+    
+    # 1. Plot 3D a sinistra (occupa entrambe le righe della colonna 0)
+    ax = fig.add_subplot(gs[:, 0], projection='3d')
+    
+    # 2. Plot 2D in alto a destra
+    ax2 = fig.add_subplot(gs[0, 1])
     ax2.set_aspect('equal')
     ax2.grid(True, alpha=0.3)
+    
+    # 3. Istogramma in basso a destra
+    ax3 = fig.add_subplot(gs[1, 1])
+    
     R_C1, R_C2 = 1.7, 2.1
     ranges = [0, N1, N1+N2, N1+N2+N3, N1+N2+N3+N4]
-    
+    z_intersections = [] # Lista per l'istogramma
+
     def get_geom(b):
         if b < ranges[1]: 
             return R_C1, 2*np.pi*(-b)/N1 + PHI_OFFSET_C1IN, -1, "red", 1
@@ -686,140 +813,124 @@ def mapper_plot_two_cylinders(bundles_green, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIB
             return R_C2, 2*np.pi*(+b_loc)/N4 + PHI_OFFSET_C2OUT, 1, "deepskyblue", 2
         return None
 
-    # Background
+    # --- Background ---
     for i in range(ranges[4]):
         g = get_geom(i)
         if g:
-            z = np.linspace(-L, L, 20)
-            phi = g[1] + g[2] * ((z+L)/(2*L))*np.pi
-            ax.plot(z, g[0]*np.cos(phi), g[0]*np.sin(phi), lw=0.1, color=g[3])
+            z_bg = np.linspace(-L, L, 20)
+            phi = g[1] + g[2] * ((z_bg+L)/(2*L))*np.pi
+            ax.plot(z_bg, g[0]*np.cos(phi), g[0]*np.sin(phi), lw=0.1, color=g[3], alpha=0.5)
 
-    # Active
-    c1cw, c1ccw, c2cw, c2ccw = [],[],[],[]
+    # --- Marker Verdi (Riferimento) ---
+    z_mark = np.linspace(-15, -14, 20)
+    x1_m = R_C1 * np.cos(OFFSET_EXP + np.pi/2)
+    y1_m = R_C1 * np.sin(OFFSET_EXP + np.pi/2)
+    ax.plot(z_mark, [x1_m]*20, [y1_m]*20, lw=2, color='green')
+    
+    x2_m = R_C2 * np.cos(OFFSET_EXP + np.pi/2)
+    y2_m = R_C2 * np.sin(OFFSET_EXP + np.pi/2)
+    ax.plot(z_mark, [x2_m]*20, [y2_m]*20, lw=2, color='green')
+    
+    ax2.scatter(x1_m, y1_m, s=10, color='green', marker='o', label='Ref Mark')
+    ax2.scatter(x2_m, y2_m, s=10, color='green', marker='o')
+
+    # --- Flange ---
+    r_flange = 3.5
+    pos_z = -15
+    theta_f = np.linspace(0, 2*np.pi, 100); r_f = np.linspace(0, r_flange, 2)
+    T, R_grid = np.meshgrid(theta_f, r_f)
+    ax.plot_surface(np.full_like(T, pos_z), R_grid*np.cos(T), R_grid*np.sin(T), color='gray', alpha=0.2)
+
+    # --- Active Fibers ---
+    c1cw, c1ccw, c2cw, c2ccw = [], [], [], []
     for b in bundles_green:
         g = get_geom(b)
         if g:
-            z = np.linspace(-L, L, 100)
-            phi = g[1] + g[2] * ((z+L)/(2*L))*np.pi
-            ax.plot(z, g[0]*np.cos(phi), g[0]*np.sin(phi), lw=2.5, color=g[3])
-            z_0 = 15 # Nota che qui vediamo la posizione downstream!
-            pc = g[1] + g[2] * ((z_0+L)/(2*L))*np.pi
-            x0, y0 = g[0]*np.cos(pc), g[0]*np.sin(pc)
+            z_vals = np.linspace(-L, L, 100)
+            phi = g[1] + g[2] * ((z_vals+L)/(2*L))*np.pi
+            ax.plot(z_vals, g[0]*np.cos(phi), g[0]*np.sin(phi), lw=2.5, color=g[3])
+            
+            z_view = 15 # DS
+            phi_ds = g[1] + g[2] * ((z_view+L)/(2*L))*np.pi
+            x0, y0 = g[0]*np.cos(phi_ds), g[0]*np.sin(phi_ds)
             ax2.scatter(x0, y0, s=100, color=g[3], edgecolors='k', zorder=10)
             
             label = b if b < (N1+N2) else b - (N1+N2)
-            txt_off = 1.15 if b < (N1+N2) else 1.10
-            ax2.text(x0*txt_off, y0*txt_off, str(label), fontsize=9, ha='center', va='center')
+            ax2.text(x0*1.15, y0*1.15, str(label), fontsize=9, ha='center')
             
             if g[4]==1: (c1cw if g[2]==-1 else c1ccw).append((b, g[1]))
             else:       (c2cw if g[2]==-1 else c2ccw).append((b, g[1]))
 
-    def do_cross(cw, ccw, R):
-        for b1,p1 in cw:
-            for b2,p2 in ccw:
+    # --- Intersezioni ---
+    def do_cross(cw, ccw, R_cyl):
+        for b1, p1 in cw:
+            for b2, p2 in ccw:
                 delta = p1 - p2
                 for k in range(-2, 3):
                     th = delta/2.0 - k*np.pi
-                    if -0.001<=th<=np.pi+0.001:
-                        ax.scatter((2*L*th/np.pi)-L, R*np.cos(p2+th), R*np.sin(p2+th), s=200, marker='*', color='gold', ec='k', zorder=20)
+                    if -0.001 <= th <= np.pi + 0.001:
+                        z_int = (2*L*th/np.pi) - L
+                        z_intersections.append(z_int)
+                        ax.scatter(z_int, R_cyl*np.cos(p2+th), R_cyl*np.sin(p2+th), s=200, marker='*', color='gold', ec='k', zorder=20)
+                        print(f'Intersezione bundle {b1} e {b2}: phi = {(p2+th-2*np.pi):.2f} rad = {((p2+th-2*np.pi) * 180 / np.pi):.2f} deg; z = {z_int:.3f} ')
+
     do_cross(c1cw, c1ccw, R_C1)
     do_cross(c2cw, c2ccw, R_C2)
 
-    ax.text(-L, 0, 0, "US", color='k', fontsize=16)
-    ax.text(+L, 0, 0, "DS", color='k', fontsize=16)
+    # --- Plot Istogramma (ax3) ---
+    if z_intersections:
+        ax3.hist(z_intersections, bins=np.linspace(-L, L, 30), color='gold', edgecolor='black', alpha=0.7)        
+        ax3.set_title("Longitudinal Intersections Distribution")
+        ax3.set_xlabel("z [cm]")
+        ax3.set_ylabel("Counts")
+        ax3.set_xlim(-L, L)
+        ax3.grid(axis='y', linestyle='--', alpha=0.5)
+    else:
+        ax3.text(0.5, 0.5, "No intersections", ha='center', va='center')
 
-    ax.legend(handles=[Line2D([0],[0], color=c, lw=2, label=l) for c,l in zip(['red','lightsalmon','blue','deepskyblue'], ['C1 In','C1 Out','C2 In','C2 Out'])])
+    # --- Assi e Legende ---
+    ax.set_title(f"3D View {'| Event #'+str(event_idx) if event_idx>=0 else ''}")
+    ax.view_init(elev=20, azim=-60)
+    ax.set_xlabel("Z"); ax.set_ylabel("X"); ax.set_zlabel("Y")
+    
+    ax2.set_title(f"2D Cross-section (z={z_view})")
+    ax2.add_artist(plt.Circle((0,0), R_C1, fill=False, color='gray', ls='--'))
+    ax2.add_artist(plt.Circle((0,0), R_C2, fill=False, color='gray', ls='--'))
+    ax2.set_xlim(-3.5, 3.5); ax2.set_ylim(-3.5, 3.5)
+    
+    legend_elements = [Line2D([0], [0], color=c, lw=2, label=l) 
+                       for c, l in zip(['red','lightsalmon','blue','deepskyblue'], ['C1 In','C1 Out','C2 In','C2 Out'])]
+    ax.legend(handles=legend_elements, loc='upper left')
 
-    title_str = "3D Event View"
-    if event_idx >= 0: title_str += f" | Event #{event_idx}"
-    ax.set_title(title_str); ax.view_init(elev=20, azim=-60)
-    ax2.set_title("2D View"); ax2.add_artist(plt.Circle((0,0), R_C1, fill=False)); ax2.add_artist(plt.Circle((0,0), R_C2, fill=False))
-    ax2.set_xlim(-3.5,3.5); ax2.set_ylim(-3.5,3.5)
-    plt.tight_layout()
     return fig
 
 def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
-    fig = plt.figure(figsize=(18, 9))
-    gs = GridSpec(4, 2, width_ratios=[1, 1.2])
-    
-    ax_h1 = fig.add_subplot(gs[0, 0])
-    ax_h2 = fig.add_subplot(gs[1, 0], sharey=ax_h1)
-    ax_h3 = fig.add_subplot(gs[2, 0], sharey=ax_h1)
-    ax_h4 = fig.add_subplot(gs[3, 0], sharey=ax_h1)
-    ax2d = fig.add_subplot(gs[:, 1])
-    ax2d.set_aspect('equal')
-
-    data_c1_in = [bundle_counts.get(i, 0) for i in range(0, N1)]
-    data_c1_out = [bundle_counts.get(i, 0) for i in range(N1, N1+N2)]
-    idx3 = N1+N2
-    data_c2_in = [bundle_counts.get(i, 0) for i in range(idx3, idx3+N3)]
-    idx4 = idx3+N3
-    data_c2_out = [bundle_counts.get(i, 0) for i in range(idx4, idx4+N4)]
-
-    ax_h1.bar(range(0, N1), data_c1_in, color='red', alpha=0.7)
-    ax_h1.set_title(f"Cyl 1 Inner - Tot: {sum(data_c1_in)}")
-    ax_h1.grid(True, alpha=0.3)
-    ax_h2.bar(range(0, N2), data_c1_out, color='lightsalmon', alpha=0.7)
-    ax_h2.set_title(f"Cyl 1 Outer - Tot: {sum(data_c1_out)}")
-    ax_h2.grid(True, alpha=0.3)
-    ax_h3.bar(range(0, N3), data_c2_in, color='blue', alpha=0.7)
-    ax_h3.set_title(f"Cyl 2 Inner - Tot: {sum(data_c2_in)}")
-    ax_h3.grid(True, alpha=0.3)
-    ax_h4.bar(range(0, N4), data_c2_out, color='deepskyblue', alpha=0.7)
-    ax_h4.set_title(f"Cyl 2 Outer - Tot: {sum(data_c2_out)}")
-    ax_h4.grid(True, alpha=0.3)
-    ax_h4.set_xlabel("Bundle ID (Relative)")
-
+    fig = plt.figure(figsize=(18, 9)); gs = GridSpec(4, 2, width_ratios=[1, 1.2])
+    ax_h1 = fig.add_subplot(gs[0, 0]); ax_h2 = fig.add_subplot(gs[1, 0], sharey=ax_h1)
+    ax_h3 = fig.add_subplot(gs[2, 0], sharey=ax_h1); ax_h4 = fig.add_subplot(gs[3, 0], sharey=ax_h1)
+    ax2d = fig.add_subplot(gs[:, 1]); ax2d.set_aspect('equal')
+    data_c1_in = [bundle_counts.get(i, 0) for i in range(0, N1)]; data_c1_out = [bundle_counts.get(i, 0) for i in range(N1, N1+N2)]
+    data_c2_in = [bundle_counts.get(i, 0) for i in range(N1+N2, N1+N2+N3)]; data_c2_out = [bundle_counts.get(i, 0) for i in range(N1+N2+N3, N1+N2+N3+N4)]
+    ax_h1.bar(range(0, N1), data_c1_in, color='red', alpha=0.7); ax_h1.set_title(f"Cyl 1 Inner - Tot: {sum(data_c1_in)}")
+    ax_h1.set_xlabel("Local Bundle ID"); ax_h1.set_ylabel("Hits")
+    ax_h2.bar(range(0, N2), data_c1_out, color='lightsalmon', alpha=0.7); ax_h2.set_title(f"Cyl 1 Outer - Tot: {sum(data_c1_out)}")
+    ax_h2.set_xlabel("Local Bundle ID"); ax_h2.set_ylabel("Hits")
+    ax_h3.bar(range(0, N3), data_c2_in, color='blue', alpha=0.7); ax_h3.set_title(f"Cyl 2 Inner - Tot: {sum(data_c2_in)}")
+    ax_h3.set_xlabel("Local Bundle ID"); ax_h3.set_ylabel("Hits")
+    ax_h4.bar(range(0, N4), data_c2_out, color='deepskyblue', alpha=0.7); ax_h4.set_title(f"Cyl 2 Outer - Tot: {sum(data_c2_out)}")
+    ax_h4.set_xlabel("Local Bundle ID"); ax_h4.set_ylabel("Hits")
     R_C1, R_C2 = 1.7, 2.1
-    idx_start_c1_in, idx_start_c1_out = 0, N1
-    idx_start_c2_in, idx_start_c2_out = N1+N2, N1+N2+N3
-    total_fibers = N1+N2+N3+N4
-
     max_val = max(bundle_counts.values()) if bundle_counts else 1
-    cmap = cm.inferno.reversed() 
-    norm = mcolors.Normalize(vmin=0, vmax=max_val)
-    DR_VIS = 0.08
-
-    def get_vis_geom(b_idx):
-        if b_idx < idx_start_c1_out:
-            phi = 2*np.pi*(-b_idx)/N1 + PHI_OFFSET_C1IN
-            return R_C1 - DR_VIS, phi, -1
-        elif b_idx < idx_start_c2_in:
-            bl = b_idx - idx_start_c1_out
-            phi = 2*np.pi*(bl)/N2 + PHI_OFFSET_C1OUT
-            return R_C1 + DR_VIS, phi, 1
-        elif b_idx < idx_start_c2_out:
-            bl = b_idx - idx_start_c2_in
-            phi = 2*np.pi*(-bl)/N3 + PHI_OFFSET_C2IN
-            return R_C2 - DR_VIS, phi, -1
-        elif b_idx < total_fibers:
-            bl = b_idx - idx_start_c2_out
-            phi = 2*np.pi*(bl)/N4 + PHI_OFFSET_C2OUT
-            return R_C2 + DR_VIS, phi, 1
-        return None
-
-    for i in range(total_fibers):
-        g = get_vis_geom(i)
-        if g:
-            R_vis, phi0, d = g
-            phi_c = phi0 + d*((0+L)/(2*L))*np.pi
-            x0, y0 = R_vis*np.cos(phi_c), R_vis*np.sin(phi_c)
-            cnt = bundle_counts.get(i, 0)
-            if cnt > 0:
-                color = cmap(norm(cnt))
-                alpha, ec, sz, zo = 1.0, 'k', 120, 20
-            else:
-                color = 'whitesmoke'; alpha, ec, sz, zo = 0.8, 'silver', 60, 5
-            ax2d.scatter(x0, y0, s=sz, color=color, edgecolors=ec, alpha=alpha, zorder=zo)
-    
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm); sm.set_array([])
-    cb = plt.colorbar(sm, ax=ax2d, fraction=0.046, pad=0.04)
-    cb.set_label('Hits')
-
-    ax2d.set_title(f"Cumulative Hitmap (Tot: {sum(bundle_counts.values())})")
-    ax2d.set_xlim(-3.5, 3.5); ax2d.set_ylim(-3.5, 3.5)
-    ax2d.add_artist(plt.Circle((0,0), R_C1, fill=False, lw=0.5, ls='--'))
-    ax2d.add_artist(plt.Circle((0,0), R_C2, fill=False, lw=0.5, ls='--'))
+    cmap = cm.inferno.reversed(); norm = mcolors.Normalize(vmin=0, vmax=max_val)
+    for i in range(N1+N2+N3+N4):
+        if i < N1: R, p0, d = R_C1-0.08, 2*np.pi*(-i)/N1 + PHI_OFFSET_C1IN, -1
+        elif i < N1+N2: R, p0, d = R_C1+0.08, 2*np.pi*(i-N1)/N2 + PHI_OFFSET_C1OUT, 1
+        elif i < N1+N2+N3: R, p0, d = R_C2-0.08, 2*np.pi*(-(i-(N1+N2)))/N3 + PHI_OFFSET_C2IN, -1
+        else: R, p0, d = R_C2+0.08, 2*np.pi*(i-(N1+N2+N3))/N4 + PHI_OFFSET_C2OUT, 1
+        pc = p0 + d*((0+L)/(2*L))*np.pi; cnt = bundle_counts.get(i, 0)
+        ax2d.scatter(R*np.cos(pc), R*np.sin(pc), s=100 if cnt>0 else 60, color=cmap(norm(cnt)) if cnt>0 else 'whitesmoke', edgecolors='k', alpha=1.0 if cnt>0 else 0.5)
+    ax2d.add_artist(plt.Circle((0,0), R_C1, fill=False, lw=0.5, ls='--')); ax2d.add_artist(plt.Circle((0,0), R_C2, fill=False, lw=0.5, ls='--'))
+    ax2d.set_xlabel("X position [cm]"); ax2d.set_ylabel("Y position [cm]")
     plt.tight_layout(); plt.show()
 
 # ==========================================
@@ -827,20 +938,10 @@ def mapper_plot_heatmap(bundle_counts, N1=N1, N2=N2, N3=N3, N4=N4, L=L_FIBER):
 # ==========================================
 
 def plot_event_toa_histogram(hits, ev_idx):
-    """Plots histogram of ToA for the current event (blocking)."""
     toas = [h['toa_correct'] for h in hits]
-    if not toas:
-        print("No ToA data to plot.")
-        return
-    
-    plt.figure(figsize=(8, 5))
-    plt.hist(toas, bins=50, color='skyblue', edgecolor='black', alpha=0.7)
-    plt.title(f"Event #{ev_idx}: ToA Distribution")
-    plt.xlabel("ToA corrected (raw)")
-    plt.ylabel("Counts")
-    plt.grid(True, alpha=0.3)
-    print("\n>>> Displaying ToA Histogram. Close the plot window to continue...")
-    plt.show()
+    if not toas: return
+    plt.figure(figsize=(8, 5)); plt.hist(toas, bins=50, color='skyblue', edgecolor='black', alpha=0.7)
+    plt.title(f"Event #{ev_idx}: ToA Distribution"); plt.xlabel("Corrected ToA [ns]"); plt.ylabel("Counts"); plt.show()
 
 def run_sequential_mode(filename):
     try:
@@ -906,76 +1007,43 @@ def run_sequential_mode(filename):
 # ==========================================
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        FILENAME = sys.argv[1]
-        print(f"File loaded: {FILENAME}")
-    else:
-        FILENAME = input("Enter .mid.lz4 filename (e.g. ../run00200.mid.lz4): ").strip()
-        if not FILENAME:
-            print("No file provided. Exiting.")
-            sys.exit(0)
-    
-    if not os.path.exists(FILENAME):
-        print(f"ERROR: File '{FILENAME}' not found.")
-        sys.exit(1)
+    if len(sys.argv) > 1: FILENAME = sys.argv[1]
+    else: FILENAME = input("Enter .mid.lz4 filename: ").strip()
+    if not os.path.exists(FILENAME): sys.exit(1)
 
-    print("========================================")
-    print("       MIDAS FIBER ANALYZER            ")
-    print("========================================")
-    print("1. Single Event (Specific)")
-    print("2. Cumulative Histogram (Heatmap & Cuts Analysis)")
-    print("3. Sequential (Hist -> Cut -> Plot)")
-    print("4. ToA vs ToT 2D Histogram")
-    print("5. Manual Debug (Check Mapping)")
+    print("========================================\n       MIDAS FIBER ANALYZER            \n========================================")
+    print("1. Single Event (Specific)\n2. Cumulative Histogram (Heatmap & Cuts Analysis)\n3. Sequential (Hist -> Cut -> Plot)\n4. ToA vs ToT 2D Histogram\n5. Manual Debug (Check Mapping)")
 
     m = input("\n>>> Select mode (1-5): ")
 
     if m=='1':
         hits = read_nth_physics_event(FILENAME)
         if hits:
-            bids = []
-            for i, h in enumerate(hits):
-                print(f"{i+1}) Board: {h['board']:<2} | Ch: {h['ch']:<2} | ToA: {h['toa']} | ToT: {h['tot']}")
-                bi = get_bundle_id(h['board'], h['ch'])
-                if bi is not None: bids.append(bi)
-                else: print(f"⚠️ WARNING: Mapping not found for Board {h['board']} Channel {h['ch']}")
+            bids = [get_bundle_id(h['board'], h['ch']) for h in hits if get_bundle_id(h['board'], h['ch']) is not None]
             mapper_plot_two_cylinders(bids).show(); plt.show()
 
     elif m=='2': 
         print("\n--- Optional Cuts for Cumulative Analysis ---")
         try:
-            t_min_in = input(f"Min Corrected ToA [0]: ")
-            toa_min = int(t_min_in) if t_min_in else 0
-            t_max_in = input(f"Max Corrected ToA [{TOA_MAX_GLOBAL}]: ")
-            toa_max = int(t_max_in) if t_max_in else TOA_MAX_GLOBAL
+            toa_min = int(input(f"Min Corrected ToA [0]: ") or 0)
+            toa_max = int(input(f"Max Corrected ToA [{TOA_MAX_GLOBAL}]: ") or TOA_MAX_GLOBAL)
+            tot_min = int(input(f"Min ToT [0]: ") or 0)
+            tot_max = int(input(f"Max ToT [No Limit]: ") or 1000000000)
             
-            tot_min_in = input(f"Min ToT [0]: ")
-            tot_min = int(tot_min_in) if tot_min_in else 0
-            tot_max_in = input(f"Max ToT [No Limit]: ")
-            tot_max = int(tot_max_in) if tot_max_in else 1000000000
+            res = read_cumulative_hits(FILENAME, toa_limits=(toa_min, toa_max), tot_limits=(tot_min, tot_max))
+            counts, list_toa, list_tot, d_toa, d_tot, mult, b_toa, b_tot, z_cross, s_tot, a_tot, f_toa, m_toa = res
             
-            # Recupera conteggi, liste distribuzioni e DIZIONARI PER BOARD
-            counts, list_toa, list_tot, list_delta_toa, list_delta_tot, list_hits_data, dict_toa_board, dict_tot_board = read_cumulative_hits(
-                FILENAME, 
-                toa_limits=(toa_min, toa_max), 
-                tot_limits=(tot_min, tot_max)
-            )
-            
-            # 1. Plot Heatmap
             mapper_plot_heatmap(counts)
-            
-            # 2. Plot Distribuzioni Globali
-            cuts_str = {'toa': f"{toa_min}-{toa_max}", 'tot': f"{tot_min}-{tot_max}"}
-            plot_run_distributions(list_toa, list_tot, list_delta_toa, list_delta_tot, cuts_str)
-            
-            # 3. Plot Distribuzioni PER BOARD
-            plot_distributions_by_board(dict_toa_board, dict_tot_board)
+            plot_run_distributions(list_toa, list_tot, d_toa, d_tot, {'toa': f"{toa_min}-{toa_max}", 'tot': f"{tot_min}-{tot_max}"})
+            plot_distributions_by_board(b_toa, b_tot)
+            plot_hit_multiplicity(mult)
+            plot_crossing_z_distribution(z_cross)
 
-            # 4. Plot Hit Multiplicity
-            plot_hit_multiplicity(list_hits_data)
+            # NUOVE FINESTRE RICHIESTE (Distribuzioni 2D con Box Statistiche Corrette)
+            plot_2d_hits_vs_tot_stats(mult['total'], s_tot, a_tot)
+            plot_2d_hits_vs_toa_stats(mult['total'], f_toa, m_toa)
 
-        except ValueError:
-            print("Invalid input.")
+        except ValueError: print("Invalid input.")
 
     elif m=='3': run_sequential_mode(FILENAME)
     elif m=='4': analyze_toa_tot(FILENAME)
